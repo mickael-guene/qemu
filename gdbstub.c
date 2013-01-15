@@ -863,6 +863,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
                     s->c_cpu = cpu;
                 }
                 if (res == 's') {
+                    gdb_breakpoint_remove_all();
                     cpu_single_step(s->c_cpu, sstep_flags);
                 }
                 s->signal = res_signal;
