@@ -297,6 +297,17 @@ static inline void init_thread(struct target_pt_regs *regs,
     /* For uClinux PIC binaries.  */
     /* XXX: Linux does this only on ARM with no MMU (do we care ?) */
     regs->ARM_r10 = infop->start_data;
+#ifdef CONFIG_USE_FDPIC
+    regs->ARM_r7 = infop->loadmap_addr;
+    if (infop->interpreter_loadmap_addr) {
+        /* exe is dynamically loaded */
+        regs->ARM_r8 = infop->interpreter_loadmap_addr;
+        regs->ARM_r9 = infop->interpreter_pt_dynamic_addr;
+    } else {
+        regs->ARM_r8 = 0;
+        regs->ARM_r9 = infop->pt_dynamic_addr;
+    }
+#endif
 }
 
 #define ELF_NREG    18
@@ -1470,6 +1481,16 @@ static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
     }
 }
 
+#ifdef TARGET_ARM
+#ifdef CONFIG_USE_FDPIC
+static int elf_is_fdpic(struct elfhdr *exec)
+{
+    return exec->e_flags & 0x00001000;
+}
+
+#endif
+#endif
+
 #ifdef CONFIG_USE_FDPIC
 static abi_ulong loader_build_fdpic_loadmap(struct image_info *info, abi_ulong sp)
 {
@@ -1524,6 +1545,11 @@ static abi_ulong create_elf_tables(abi_ulong p, int argc, int envc,
         if (interp_info) {
             interp_info->other_info = info;
             sp = loader_build_fdpic_loadmap(interp_info, sp);
+            info->interpreter_loadmap_addr = interp_info->loadmap_addr;
+            info->interpreter_pt_dynamic_addr = interp_info->pt_dynamic_addr;
+        } else {
+            info->interpreter_loadmap_addr = 0;
+            info->interpreter_pt_dynamic_addr = 0;
         }
     }
 #endif
