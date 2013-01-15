@@ -336,6 +336,7 @@ libssh2=""
 vhdx=""
 quorum=""
 numa=""
+fdpic="no"
 
 # parse CC options first
 for opt do
@@ -1134,6 +1135,10 @@ for opt do
   ;;
   --enable-numa) numa="yes"
   ;;
+  --enable-fdpic) fdpic="yes"
+  ;;
+  --disable-fdpic) fdpic="no"
+  ;;
   *)
       echo "ERROR: unknown option $opt"
       echo "Try '$0 --help' for more information"
@@ -1407,6 +1412,8 @@ Advanced options (experts only):
   --enable-quorum          enable quorum block filter support
   --disable-numa           disable libnuma support
   --enable-numa            enable libnuma support
+  --enable-fdpic           enable load of fdpic binary
+  --disable-fdpic          disable load of fdpic binary (default)
 
 NOTE: The object files are built at the place where configure is launched
 EOF
@@ -5431,6 +5438,9 @@ fi
 
 echo "LDFLAGS+=$ldflags" >> $config_target_mak
 echo "QEMU_CFLAGS+=$cflags" >> $config_target_mak
+if test "$fdpic" = "yes" ; then
+    echo "CONFIG_USE_FDPIC=y" >> $config_target_mak
+fi
 
 done # for target in $targets
 
