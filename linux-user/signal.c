@@ -1606,8 +1606,19 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 	}
 
 	if (ka->sa_flags & TARGET_SA_RESTORER) {
-		retcode = ka->sa_restorer;
+#ifdef CONFIG_USE_FDPIC
+        /* code below is not completely correct since we don't setup r9 according to funcdesc
+            => this will not work if restorer is not in same module that code that call sigaction syscall */
+        /* correct solution is to write code on stack that will setup also r9 and jump to restorer function */
+		retcode = ((unsigned int *)ka->sa_restorer)[0];
+#else
+        retcode = ka->sa_restorer;
+#endif
 	} else {
+#ifdef CONFIG_USE_FDPIC
+        fprintf(stderr, "Implement me if you want this to work ...\n");
+        exit(-1);
+#else
 		unsigned int idx = thumb;
 
 		if (ka->sa_flags & TARGET_SA_SIGINFO)
@@ -1616,12 +1627,20 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
         __put_user(retcodes[idx], rc);
 
 		retcode = rc_addr + thumb;
+#endif
 	}
 
 	env->regs[0] = usig;
+#ifdef CONFIG_USE_FDPIC
+    env->regs[9] = ((unsigned int *)ka->_sa_handler)[1];
+#endif
 	env->regs[13] = frame_addr;
 	env->regs[14] = retcode;
+#ifdef CONFIG_USE_FDPIC
+    env->regs[15] = ((unsigned int *)ka->_sa_handler)[0];
+#else
 	env->regs[15] = handler & (thumb ? ~1 : ~3);
+#endif
 	cpsr_write(env, cpsr, 0xffffffff);
 }
 
