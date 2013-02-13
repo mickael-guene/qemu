@@ -1492,13 +1492,13 @@ struct sigframe_v1
 {
     struct target_sigcontext sc;
     abi_ulong extramask[TARGET_NSIG_WORDS-1];
-    abi_ulong retcode;
+    abi_ulong retcode[4];
 };
 
 struct sigframe_v2
 {
     struct target_ucontext_v2 uc;
-    abi_ulong retcode;
+    abi_ulong retcode[4];
 };
 
 struct rt_sigframe_v1
@@ -1507,14 +1507,14 @@ struct rt_sigframe_v1
     abi_ulong puc;
     struct target_siginfo info;
     struct target_ucontext_v1 uc;
-    abi_ulong retcode;
+    abi_ulong retcode[4];
 };
 
 struct rt_sigframe_v2
 {
     struct target_siginfo info;
     struct target_ucontext_v2 uc;
-    abi_ulong retcode;
+    abi_ulong retcode[4];
 };
 
 #define TARGET_CONFIG_CPU_32 1
@@ -1537,6 +1537,11 @@ static const abi_ulong retcodes[4] = {
 	SWI_SYS_RT_SIGRETURN,	SWI_THUMB_RT_SIGRETURN
 };
 
+static const unsigned long sigreturn_fdpic_codes[3] = {
+    0xe59fc004, /* ldr r12, [pc, #4] to read function descriptor */
+    0xe59c9004, /* ldr r9, [r12, #4] to setup got */
+    0xe59cf000  /* ldr pc, [r12] to jump into restorer */
+};
 
 static inline int valid_user_regs(CPUARMState *regs)
 {
@@ -1607,10 +1612,19 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 
 	if (ka->sa_flags & TARGET_SA_RESTORER) {
 #ifdef CONFIG_USE_FDPIC
-        /* code below is not completely correct since we don't setup r9 according to funcdesc
-            => this will not work if restorer is not in same module that code that call sigaction syscall */
-        /* correct solution is to write code on stack that will setup also r9 and jump to restorer function */
-		retcode = ((unsigned int *)ka->sa_restorer)[0];
+        /* for fdpic we ensure that restorer is call with a correct r9 value
+         * for that we need to write code on stack that setup r9 and jump back to restorer value
+         */
+        struct fdpic_func_descriptor *funcptr = (struct fdpic_func_descriptor *)ka->sa_restorer;
+
+        if (thumb)
+            return 1;
+        __put_user(sigreturn_fdpic_codes[0],   rc);
+        __put_user(sigreturn_fdpic_codes[1],   rc+1);
+        __put_user(sigreturn_fdpic_codes[2],   rc+2);
+        __put_user((unsigned long)funcptr,     rc+3);
+
+        retcode = (unsigned long)rc;
 #else
         retcode = ka->sa_restorer;
 #endif
@@ -1732,7 +1746,7 @@ static void setup_frame_v1(int usig, struct target_sigaction *ka,
         __put_user(set->sig[i], &frame->extramask[i - 1]);
     }
 
-        setup_return(regs, ka, &frame->retcode, frame_addr, usig,
+        setup_return(regs, ka, frame->retcode, frame_addr, usig,
                      frame_addr + offsetof(struct sigframe_v1, retcode));
 
 	unlock_user_struct(frame, frame_addr, 1);
@@ -1749,7 +1763,7 @@ static void setup_frame_v2(int usig, struct target_sigaction *ka,
 
         setup_sigframe_v2(&frame->uc, set, regs);
 
-        setup_return(regs, ka, &frame->retcode, frame_addr, usig,
+        setup_return(regs, ka, frame->retcode, frame_addr, usig,
                      frame_addr + offsetof(struct sigframe_v2, retcode));
 
 	unlock_user_struct(frame, frame_addr, 1);
@@ -1799,7 +1813,7 @@ static void setup_rt_frame_v1(int usig, struct target_sigaction *ka,
             __put_user(set->sig[i], &frame->uc.tuc_sigmask.sig[i]);
         }
 
-        setup_return(env, ka, &frame->retcode, frame_addr, usig,
+        setup_return(env, ka, frame->retcode, frame_addr, usig,
                      frame_addr + offsetof(struct rt_sigframe_v1, retcode));
 
         env->regs[1] = info_addr;
@@ -1825,7 +1839,7 @@ static void setup_rt_frame_v2(int usig, struct target_sigaction *ka,
 
         setup_sigframe_v2(&frame->uc, set, env);
 
-        setup_return(env, ka, &frame->retcode, frame_addr, usig,
+        setup_return(env, ka, frame->retcode, frame_addr, usig,
                      frame_addr + offsetof(struct rt_sigframe_v2, retcode));
 
         env->regs[1] = info_addr;
