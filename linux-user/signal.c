@@ -1600,7 +1600,11 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 {
 	abi_ulong handler = ka->_sa_handler;
 	abi_ulong retcode;
+#ifdef CONFIG_USE_FDPIC
+	int thumb = (((unsigned int *)ka->_sa_handler)[0]) & 1;
+#else
 	int thumb = handler & 1;
+#endif
 	uint32_t cpsr = cpsr_read(env);
 
 	cpsr &= ~CPSR_IT;
@@ -1617,8 +1621,6 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
          */
         struct fdpic_func_descriptor *funcptr = (struct fdpic_func_descriptor *)ka->sa_restorer;
 
-        if (thumb)
-            return 1;
         __put_user(sigreturn_fdpic_codes[0],   rc);
         __put_user(sigreturn_fdpic_codes[1],   rc+1);
         __put_user(sigreturn_fdpic_codes[2],   rc+2);
@@ -1651,7 +1653,7 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 	env->regs[13] = frame_addr;
 	env->regs[14] = retcode;
 #ifdef CONFIG_USE_FDPIC
-    env->regs[15] = ((unsigned int *)ka->_sa_handler)[0];
+    env->regs[15] = ((unsigned int *)ka->_sa_handler)[0] & (thumb ? ~1 : ~3);
 #else
 	env->regs[15] = handler & (thumb ? ~1 : ~3);
 #endif
