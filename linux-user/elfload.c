@@ -1864,13 +1864,13 @@ static void load_elf_image(const char *image_name, int image_fd,
     }
 
     load_addr = loaddr;
-    if (ehdr->e_type == ET_DYN) {
+    if (ehdr->e_type == ET_DYN || elf_is_fdpic(ehdr)) {
         /* The image indicates that it can be loaded anywhere.  Find a
            location that can hold the memory space required.  If the
            image is pre-linked, LOADDR will be non-zero.  Since we do
            not supply MAP_FIXED here we'll use that address if and
            only if it remains available.  */
-        load_addr = target_mmap(loaddr, hiaddr - loaddr, PROT_NONE,
+        load_addr = target_mmap(elf_is_fdpic(ehdr)?0:loaddr, hiaddr - loaddr, PROT_NONE,
                                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
                                 -1, 0);
         if (load_addr == -1) {
