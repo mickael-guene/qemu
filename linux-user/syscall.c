@@ -6091,10 +6091,32 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                 tmsp = lock_user(VERIFY_WRITE, arg1, sizeof(struct target_tms), 0);
                 if (!tmsp)
                     goto efault;
-                tmsp->tms_utime = tswapal(host_to_target_clock_t(tms.tms_utime));
-                tmsp->tms_stime = tswapal(host_to_target_clock_t(tms.tms_stime));
-                tmsp->tms_cutime = tswapal(host_to_target_clock_t(tms.tms_cutime));
-                tmsp->tms_cstime = tswapal(host_to_target_clock_t(tms.tms_cstime));
+                if (clock_ifetch) {
+                    assert(count_ifetch);
+                    /* The following computation may look a little bit
+                     * "magic" but it is actually coherent in terms of
+                     * unit:
+                     *
+                     *     ifetch_counter       -> #instructions            (i)
+                     *     clock_ifetch         -> #instructions / #seconds (i/s)
+                     *     sysconf(_SC_CLK_TCK) -> #ticks / #seconds        (t/s)
+                     *
+                     * As a consequence the result is in #ticks since:
+                     *
+                     *     i / (i/s) * t/s      -> t
+                     */
+                    abi_long utime_ticks = (abi_long) (cpu->ifetch_counter * (long long) sysconf(_SC_CLK_TCK) / clock_ifetch);
+
+                    tmsp->tms_utime  = tswapl(utime_ticks);
+
+                    tmsp->tms_stime = 0;
+                }
+                else {
+                    tmsp->tms_utime  = tswapl(host_to_target_clock_t(tms.tms_utime));
+                    tmsp->tms_stime = tswapl(host_to_target_clock_t(tms.tms_stime));
+                }
+                tmsp->tms_cutime = tswapl(host_to_target_clock_t(tms.tms_cutime));
+                tmsp->tms_cstime = tswapl(host_to_target_clock_t(tms.tms_cstime));
             }
             if (!is_error(ret))
                 ret = host_to_target_clock_t(ret);
@@ -9135,6 +9157,22 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         struct timespec ts;
         ret = get_errno(clock_gettime(arg1, &ts));
         if (!is_error(ret)) {
+            if (clock_ifetch) {
+                assert(count_ifetch);
+                /* The following computation may look a little bit
+                 * "magic" but it is actually coherent in terms of
+                 * unit:
+                 *
+                 *     ifetch_counter       -> #instructions            (i)
+                 *     clock_ifetch         -> #instructions / #seconds (i/s)
+                 *
+                 * As a consequence the result is in #seconds since:
+                 *
+                 *     i / (i/s)            -> s
+                 */
+                ts.tv_sec  = cpu->ifetch_counter / clock_ifetch;
+                ts.tv_nsec = ((cpu->ifetch_counter - (uint64_t)ts.tv_sec * clock_ifetch) * 1000000000) / clock_ifetch;
+            }
             host_to_target_timespec(arg2, &ts);
         }
         break;

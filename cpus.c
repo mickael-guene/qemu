@@ -1177,6 +1177,8 @@ void pause_all_vcpus(void)
             qemu_cpu_kick(cpu);
         }
     }
+
+    show_all_ifetch_counters();
 }
 
 void cpu_resume(CPUState *cpu)

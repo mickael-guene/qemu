@@ -390,7 +390,13 @@ uint32_t do_arm_semihosting(CPUARMState *env)
             return ret;
         }
     case TARGET_SYS_CLOCK:
-        return clock() / (CLOCKS_PER_SEC / 100);
+        /* Number of centiseconds since execution started.  */
+        if (clock_ifetch) {
+            assert(count_ifetch);
+            return cs->ifetch_counter / (clock_ifetch / 100);
+        } else {
+            return clock() / (CLOCKS_PER_SEC / 100);
+        }
     case TARGET_SYS_TIME:
         return set_swi_errno(ts, time(NULL));
     case TARGET_SYS_SYSTEM:

@@ -264,6 +264,7 @@ struct CPUState {
     volatile sig_atomic_t exit_request;
     uint32_t interrupt_request;
     int singlestep_enabled;
+    uint64_t ifetch_counter;
     int64_t icount_extra;
     sigjmp_buf jmp_env;
 

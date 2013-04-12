@@ -5,9 +5,34 @@
 
 /* Helpers for instruction counting code generation.  */
 
+static TCGArg *count_ifetch_arg;
 static TCGArg *icount_arg;
 static TCGLabel *icount_label;
 static TCGLabel *exitreq_label;
+
+static inline void gen_count_ifetch_start(void)
+{
+    TCGv_i64 count, ninst64;
+    TCGv_i32 ninst;
+    int i;
+
+    count = tcg_temp_new_i64();
+    tcg_gen_ld_i64(count, cpu_env, -ENV_OFFSET + offsetof(CPUState, ifetch_counter));
+    /* This is a horrid hack to allow fixing up the value later.  */
+    ninst = tcg_temp_new_i32();
+    tcg_gen_movi_i32(ninst, 0xdeadbeef);
+    i = tcg_ctx.gen_last_op_idx;
+    i = tcg_ctx.gen_op_buf[i].args;
+    count_ifetch_arg = &tcg_ctx.gen_opparam_buf[i + 1];
+
+    ninst64 = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(ninst64, ninst);
+    tcg_temp_free_i32(ninst);
+    tcg_gen_add_i64(count, count, ninst64);
+    tcg_temp_free_i64(ninst64);
+    tcg_gen_st_i64(count, cpu_env, -ENV_OFFSET + offsetof(CPUState, ifetch_counter));
+    tcg_temp_free_i64(count);
+}
 
 static inline void gen_tb_start(TranslationBlock *tb)
 {
@@ -20,6 +45,10 @@ static inline void gen_tb_start(TranslationBlock *tb)
                    offsetof(CPUState, tcg_exit_req) - ENV_OFFSET);
     tcg_gen_brcondi_i32(TCG_COND_NE, flag, 0, exitreq_label);
     tcg_temp_free_i32(flag);
+
+    if (count_ifetch) {
+        gen_count_ifetch_start();
+    }
 
     if (!(tb->cflags & CF_USE_ICOUNT)) {
         return;
@@ -51,6 +80,10 @@ static void gen_tb_end(TranslationBlock *tb, int num_insns)
 {
     gen_set_label(exitreq_label);
     tcg_gen_exit_tb((uintptr_t)tb + TB_EXIT_REQUESTED);
+
+    if (count_ifetch) {
+        *count_ifetch_arg = num_insns;
+    }
 
     if (tb->cflags & CF_USE_ICOUNT) {
         *icount_arg = num_insns;

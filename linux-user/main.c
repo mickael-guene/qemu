@@ -3580,6 +3580,17 @@ static void handle_arg_uname(const char *arg)
     qemu_uname_release = strdup(arg);
 }
 
+static void handle_arg_count_ifetch(const char *arg)
+{
+    count_ifetch |= 0x1;
+}
+
+static void handle_arg_clock_ifetch(const char *arg)
+{
+    count_ifetch |= 0x2;
+    clock_ifetch = convert_string_to_frequency(arg);
+}
+
 static void handle_arg_cpu(const char *arg)
 {
     cpu_model = strdup(arg);
@@ -3681,6 +3692,10 @@ static const struct qemu_argument arg_table[] = {
      "argv0",      "forces target process argv[0] to be 'argv0'"},
     {"r",          "QEMU_UNAME",       true,  handle_arg_uname,
      "uname",      "set qemu uname release string to 'uname'"},
+    {"count-ifetch", "QEMU_COUNT_IFETCH", false,  handle_arg_count_ifetch,
+     "",           "count the number of fetched instructions"},
+    {"clock-ifetch", "QEMU_CLOCK_IFETCH", true,  handle_arg_clock_ifetch,
+     "freq",       "make user-time related syscalls return f(ifetch / freq)"},
 #if defined(CONFIG_USE_GUEST_BASE)
     {"B",          "QEMU_GUEST_BASE",  true,  handle_arg_guest_base,
      "address",    "set guest_base address to 'address'"},
