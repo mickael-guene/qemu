@@ -488,6 +488,11 @@ typedef struct CPUARMState {
 
     void *nvic;
     const struct arm_boot_info *boot_info;
+
+#if defined(CONFIG_USER_ONLY) && defined(CONFIG_USE_FDPIC)
+    /* we need to know if we have an fdpic binary to adapt signal syscalls */
+    int is_fdpic;
+#endif
 } CPUARMState;
 
 #include "cpu-qom.h"

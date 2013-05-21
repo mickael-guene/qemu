@@ -1537,11 +1537,13 @@ static const abi_ulong retcodes[4] = {
 	SWI_SYS_RT_SIGRETURN,	SWI_THUMB_RT_SIGRETURN
 };
 
+#if defined(CONFIG_USE_FDPIC)
 static const unsigned long sigreturn_fdpic_codes[3] = {
     0xe59fc004, /* ldr r12, [pc, #4] to read function descriptor */
     0xe59c9004, /* ldr r9, [r12, #4] to setup got */
     0xe59cf000  /* ldr pc, [r12] to jump into restorer */
 };
+#endif
 
 static inline int valid_user_regs(CPUARMState *regs)
 {
@@ -1601,7 +1603,12 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 	abi_ulong handler = ka->_sa_handler;
 	abi_ulong retcode;
 #ifdef CONFIG_USE_FDPIC
-	int thumb = (((unsigned int *)ka->_sa_handler)[0]) & 1;
+	int thumb;
+
+    if (env->is_fdpic)
+        thumb = (((unsigned int *)ka->_sa_handler)[0]) & 1;
+    else
+        thumb = handler & 1;
 #else
 	int thumb = handler & 1;
 #endif
@@ -1616,24 +1623,38 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 
 	if (ka->sa_flags & TARGET_SA_RESTORER) {
 #ifdef CONFIG_USE_FDPIC
-        /* for fdpic we ensure that restorer is call with a correct r9 value
-         * for that we need to write code on stack that setup r9 and jump back to restorer value
-         */
-        struct fdpic_func_descriptor *funcptr = (struct fdpic_func_descriptor *)ka->sa_restorer;
+        if (env->is_fdpic) {
+            /* for fdpic we ensure that restorer is call with a correct r9 value
+             * for that we need to write code on stack that setup r9 and jump back to restorer value
+             */
+            struct fdpic_func_descriptor *funcptr = (struct fdpic_func_descriptor *)ka->sa_restorer;
 
-        __put_user(sigreturn_fdpic_codes[0],   rc);
-        __put_user(sigreturn_fdpic_codes[1],   rc+1);
-        __put_user(sigreturn_fdpic_codes[2],   rc+2);
-        __put_user((unsigned long)funcptr,     rc+3);
+            __put_user(sigreturn_fdpic_codes[0],   rc);
+            __put_user(sigreturn_fdpic_codes[1],   rc+1);
+            __put_user(sigreturn_fdpic_codes[2],   rc+2);
+            __put_user((unsigned long)funcptr,     rc+3);
 
-        retcode = (unsigned long)rc;
+            retcode = (unsigned long)rc;
+        } else
+            retcode = ka->sa_restorer;
 #else
         retcode = ka->sa_restorer;
 #endif
 	} else {
 #ifdef CONFIG_USE_FDPIC
-        fprintf(stderr, "Implement me if you want this to work ...\n");
-        exit(-1);
+        if (env->is_fdpic) {
+            fprintf(stderr, "Implement me if you want this to work ...\n");
+            exit(-1);
+        } else {
+		    unsigned int idx = thumb;
+
+		    if (ka->sa_flags & TARGET_SA_SIGINFO)
+			    idx += 2;
+
+		    __put_user(retcodes[idx], rc);
+
+		    retcode = rc_addr + thumb;
+        }
 #else
 		unsigned int idx = thumb;
 
@@ -1648,12 +1669,16 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
 
 	env->regs[0] = usig;
 #ifdef CONFIG_USE_FDPIC
-    env->regs[9] = ((unsigned int *)ka->_sa_handler)[1];
+    if (env->is_fdpic)
+        env->regs[9] = ((unsigned int *)ka->_sa_handler)[1];
 #endif
 	env->regs[13] = frame_addr;
 	env->regs[14] = retcode;
 #ifdef CONFIG_USE_FDPIC
-    env->regs[15] = ((unsigned int *)ka->_sa_handler)[0] & (thumb ? ~1 : ~3);
+    if (env->is_fdpic)
+        env->regs[15] = ((unsigned int *)ka->_sa_handler)[0] & (thumb ? ~1 : ~3);
+    else
+        env->regs[15] = handler & (thumb ? ~1 : ~3);
 #else
 	env->regs[15] = handler & (thumb ? ~1 : ~3);
 #endif

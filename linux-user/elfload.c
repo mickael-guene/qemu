@@ -1481,14 +1481,16 @@ static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
     }
 }
 
-#ifdef TARGET_ARM
-#ifdef CONFIG_USE_FDPIC
+#if defined(TARGET_ARM) && defined(CONFIG_USE_FDPIC)
 static int elf_is_fdpic(struct elfhdr *exec)
 {
     return exec->e_flags & 0x00001000;
 }
-
-#endif
+#else
+static int elf_is_fdpic(struct elfhdr *exec)
+{
+    return 0;
+}
 #endif
 
 #ifdef CONFIG_USE_FDPIC

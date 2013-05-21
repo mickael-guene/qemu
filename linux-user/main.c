@@ -4225,6 +4225,11 @@ int main(int argc, char **argv, char **envp)
             && (info->elf_flags & EF_ARM_BE8)) {
             env->bswap_code = 1;
         }
+#if defined(CONFIG_USE_FDPIC)
+        /* do we run an fdpic binary ? */
+        if (info->personality == 0x0080000/*PER_LINUX_FDPIC*/)
+            env->is_fdpic = 1;
+#endif
     }
 #elif defined(TARGET_UNICORE32)
     {
