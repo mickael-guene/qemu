@@ -1872,7 +1872,9 @@ static void load_elf_image(const char *image_name, int image_fd,
            image is pre-linked, LOADDR will be non-zero.  Since we do
            not supply MAP_FIXED here we'll use that address if and
            only if it remains available.  */
-        load_addr = target_mmap(elf_is_fdpic(ehdr)?0:loaddr, hiaddr - loaddr, PROT_NONE,
+        /* For fdpic code is by definition pie. We load it at a fix 2M offset. We avoid
+           using none fix position since then brk doesn't work properly */
+        load_addr = target_mmap(elf_is_fdpic(ehdr)?0x200000:loaddr, hiaddr - loaddr, PROT_NONE,
                                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
                                 -1, 0);
         if (load_addr == -1) {
