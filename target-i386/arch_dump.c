@@ -15,6 +15,7 @@
 #include "exec/cpu-all.h"
 #include "sysemu/dump.h"
 #include "elf.h"
+#include "sysemu/memory_mapping.h"
 
 #ifdef TARGET_X86_64
 typedef struct {
@@ -35,7 +36,7 @@ typedef struct {
 } x86_64_elf_prstatus;
 
 static int x86_64_write_elf64_note(WriteCoreDumpFunction f,
-                                   CPUArchState *env, int id,
+                                   CPUX86State *env, int id,
                                    void *opaque)
 {
     x86_64_user_regs_struct regs;
@@ -77,9 +78,7 @@ static int x86_64_write_elf64_note(WriteCoreDumpFunction f,
     descsz = sizeof(x86_64_elf_prstatus);
     note_size = ((sizeof(Elf64_Nhdr) + 3) / 4 + (name_size + 3) / 4 +
                 (descsz + 3) / 4) * 4;
-    note = g_malloc(note_size);
-
-    memset(note, 0, note_size);
+    note = g_malloc0(note_size);
     note->n_namesz = cpu_to_le32(name_size);
     note->n_descsz = cpu_to_le32(descsz);
     note->n_type = cpu_to_le32(NT_PRSTATUS);
@@ -119,7 +118,7 @@ typedef struct {
     char pad3[4];
 } x86_elf_prstatus;
 
-static void x86_fill_elf_prstatus(x86_elf_prstatus *prstatus, CPUArchState *env,
+static void x86_fill_elf_prstatus(x86_elf_prstatus *prstatus, CPUX86State *env,
                                   int id)
 {
     memset(prstatus, 0, sizeof(x86_elf_prstatus));
@@ -144,7 +143,7 @@ static void x86_fill_elf_prstatus(x86_elf_prstatus *prstatus, CPUArchState *env,
     prstatus->pid = id;
 }
 
-static int x86_write_elf64_note(WriteCoreDumpFunction f, CPUArchState *env,
+static int x86_write_elf64_note(WriteCoreDumpFunction f, CPUX86State *env,
                                 int id, void *opaque)
 {
     x86_elf_prstatus prstatus;
@@ -158,9 +157,7 @@ static int x86_write_elf64_note(WriteCoreDumpFunction f, CPUArchState *env,
     descsz = sizeof(x86_elf_prstatus);
     note_size = ((sizeof(Elf64_Nhdr) + 3) / 4 + (name_size + 3) / 4 +
                 (descsz + 3) / 4) * 4;
-    note = g_malloc(note_size);
-
-    memset(note, 0, note_size);
+    note = g_malloc0(note_size);
     note->n_namesz = cpu_to_le32(name_size);
     note->n_descsz = cpu_to_le32(descsz);
     note->n_type = cpu_to_le32(NT_PRSTATUS);
@@ -185,7 +182,8 @@ int x86_cpu_write_elf64_note(WriteCoreDumpFunction f, CPUState *cs,
     X86CPU *cpu = X86_CPU(cs);
     int ret;
 #ifdef TARGET_X86_64
-    bool lma = !!(first_cpu->hflags & HF_LMA_MASK);
+    X86CPU *first_x86_cpu = X86_CPU(first_cpu);
+    bool lma = !!(first_x86_cpu->env.hflags & HF_LMA_MASK);
 
     if (lma) {
         ret = x86_64_write_elf64_note(f, &cpu->env, cpuid, opaque);
@@ -214,9 +212,7 @@ int x86_cpu_write_elf32_note(WriteCoreDumpFunction f, CPUState *cs,
     descsz = sizeof(x86_elf_prstatus);
     note_size = ((sizeof(Elf32_Nhdr) + 3) / 4 + (name_size + 3) / 4 +
                 (descsz + 3) / 4) * 4;
-    note = g_malloc(note_size);
-
-    memset(note, 0, note_size);
+    note = g_malloc0(note_size);
     note->n_namesz = cpu_to_le32(name_size);
     note->n_descsz = cpu_to_le32(descsz);
     note->n_type = cpu_to_le32(NT_PRSTATUS);
@@ -273,7 +269,7 @@ static void copy_segment(QEMUCPUSegment *d, SegmentCache *s)
     d->base = s->base;
 }
 
-static void qemu_get_cpustate(QEMUCPUState *s, CPUArchState *env)
+static void qemu_get_cpustate(QEMUCPUState *s, CPUX86State *env)
 {
     memset(s, 0, sizeof(QEMUCPUState));
 
@@ -320,7 +316,7 @@ static void qemu_get_cpustate(QEMUCPUState *s, CPUArchState *env)
 }
 
 static inline int cpu_write_qemu_note(WriteCoreDumpFunction f,
-                                      CPUArchState *env,
+                                      CPUX86State *env,
                                       void *opaque,
                                       int type)
 {
@@ -343,9 +339,7 @@ static inline int cpu_write_qemu_note(WriteCoreDumpFunction f,
     }
     note_size = ((note_head_size + 3) / 4 + (name_size + 3) / 4 +
                 (descsz + 3) / 4) * 4;
-    note = g_malloc(note_size);
-
-    memset(note, 0, note_size);
+    note = g_malloc0(note_size);
     if (type == 0) {
         note32 = note;
         note32->n_namesz = cpu_to_le32(name_size);
@@ -388,13 +382,16 @@ int x86_cpu_write_elf32_qemunote(WriteCoreDumpFunction f, CPUState *cs,
     return cpu_write_qemu_note(f, &cpu->env, opaque, 0);
 }
 
-int cpu_get_dump_info(ArchDumpInfo *info)
+int cpu_get_dump_info(ArchDumpInfo *info,
+                      const GuestPhysBlockList *guest_phys_blocks)
 {
     bool lma = false;
-    RAMBlock *block;
+    GuestPhysBlock *block;
 
 #ifdef TARGET_X86_64
-    lma = !!(first_cpu->hflags & HF_LMA_MASK);
+    X86CPU *first_x86_cpu = X86_CPU(first_cpu);
+
+    lma = !!(first_x86_cpu->env.hflags & HF_LMA_MASK);
 #endif
 
     if (lma) {
@@ -409,8 +406,8 @@ int cpu_get_dump_info(ArchDumpInfo *info)
     } else {
         info->d_class = ELFCLASS32;
 
-        QTAILQ_FOREACH(block, &ram_list.blocks, next) {
-            if (block->offset + block->length > UINT_MAX) {
+        QTAILQ_FOREACH(block, &guest_phys_blocks->head, next) {
+            if (block->target_end > UINT_MAX) {
                 /* The memory size is greater than 4G */
                 info->d_class = ELFCLASS64;
                 break;

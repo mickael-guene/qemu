@@ -22,8 +22,6 @@
 #include "qemu-common.h"
 #include "libqtest.h"
 
-static const char test_image[] = "/tmp/qtest.XXXXXX";
-
 static char *create_test_img(int secs)
 {
     char *template = strdup("/tmp/qtest.XXXXXX");
@@ -171,7 +169,7 @@ static int setup_common(char *argv[], int argv_sz)
 {
     memset(cur_ide, 0, sizeof(cur_ide));
     return append_arg(0, argv, argv_sz,
-                      g_strdup("-nodefaults -display none"));
+                      g_strdup("-nodefaults"));
 }
 
 static void setup_mbr(int img_idx, MBRcontents mbr)
@@ -208,7 +206,7 @@ static int setup_ide(int argc, char *argv[], int argv_sz,
 {
     char *s1, *s2, *s3;
 
-    s1 = g_strdup_printf("-drive id=drive%d,if=%s",
+    s1 = g_strdup_printf("-drive id=drive%d,if=%s,format=raw",
                          ide_idx, dev ? "none" : "ide");
     s2 = dev ? g_strdup("") : g_strdup_printf(",index=%d", ide_idx);
 
@@ -244,7 +242,7 @@ static void test_ide_none(void)
     setup_common(argv, ARRAY_SIZE(argv));
     qtest_start(g_strjoinv(" ", argv));
     test_cmos();
-    qtest_quit(global_qtest);
+    qtest_end();
 }
 
 static void test_ide_mbr(bool use_device, MBRcontents mbr)
@@ -262,7 +260,7 @@ static void test_ide_mbr(bool use_device, MBRcontents mbr)
     }
     qtest_start(g_strjoinv(" ", argv));
     test_cmos();
-    qtest_quit(global_qtest);
+    qtest_end();
 }
 
 /*
@@ -334,7 +332,7 @@ static void test_ide_drive_user(const char *dev, bool trans)
     g_free(opts);
     qtest_start(g_strjoinv(" ", argv));
     test_cmos();
-    qtest_quit(global_qtest);
+    qtest_end();
 }
 
 /*
@@ -387,7 +385,7 @@ static void test_ide_drive_cd_0(void)
     }
     qtest_start(g_strjoinv(" ", argv));
     test_cmos();
-    qtest_quit(global_qtest);
+    qtest_end();
 }
 
 int main(int argc, char **argv)

@@ -106,6 +106,12 @@ setup-puid
 0 VALUE dma-window-base         \ Start address of window
 0 VALUE dma-window-size         \ Size of the window
 
+0 VALUE bm-handle               \ Bitmap allocator handle
+0 VALUE my-virt
+0 VALUE my-size
+0 VALUE dev-addr
+0 VALUE tmp-dev-addr
+
 \ Read helper variables (LIOBN, DMA window base and size) from the
 \ "ibm,dma-window" property. This property can be either located
 \ in the PCI device node or in the bus node, so we've got to use the
@@ -123,12 +129,20 @@ setup-puid
    decode-64 TO dma-window-base
    decode-64 TO dma-window-size
    2drop
+   bm-handle 0= IF
+       dma-window-base dma-window-size 1000 bm-allocator-init to bm-handle
+       \ Sometimes the window-base appears as zero, that does not
+       \ go well with NULL pointers. So block this address
+       dma-window-base 0= IF
+          bm-handle 1000 bm-alloc drop
+       THEN
+   THEN
 ;
 
 : (clear-dma-window-vars)  ( -- )
-   0 TO dma-window-liobn
-   0 TO dma-window-base
-   0 TO dma-window-size
+    0 TO dma-window-liobn
+    0 TO dma-window-base
+    0 TO dma-window-size
 ;
 
 \ We assume that firmware never maps more than the whole dma-window-size
@@ -142,36 +156,58 @@ setup-puid
    phb-debug? IF cr ." dma-map-in called: " .s cr THEN
    (init-dma-window-vars)
    drop                               ( virt size )
+
+   to my-size
+   to my-virt
+   bm-handle my-size bm-alloc
+   to dev-addr
+   dev-addr 0 < IF
+       ." Bitmap allocation Failed " dev-addr .
+       FALSE EXIT
+   THEN
+   dev-addr to tmp-dev-addr
+
+   my-virt my-size
    bounds dup >r                      ( v+s virt  R: virt )
    swap fff + fff not and             \ Align end to next 4k boundary
    swap fff not and                   ( v+s' virt'  R: virt )
    ?DO
-      \ ." mapping " i . cr
-      dma-window-liobn                \ liobn
-      i dma-virt2dev                  \ ioba
-      i 3 OR                          \ Make a read- & writeable TCE
-      ( liobn ioba tce  R: virt )
-      hv-put-tce ABORT" H_PUT_TCE failed"
+       \ ." mapping " i . cr
+       dma-window-liobn                \ liobn
+       tmp-dev-addr                    \ ioba
+       i 3 OR                          \ Make a read- & writeable TCE
+       ( liobn ioba tce  R: virt )
+       hv-put-tce ABORT" H_PUT_TCE failed"
+       tmp-dev-addr 1000 + to tmp-dev-addr
    1000 +LOOP
-   r> dma-virt2dev
+   r> drop
+   my-virt FFF and dev-addr or
    (clear-dma-window-vars)
 ;
 
 : dma-map-out  ( virt devaddr size -- )
    phb-debug? IF cr ." dma-map-out called: " .s cr THEN
    (init-dma-window-vars)
-   nip                                ( virt size )
+   to my-size
+   to dev-addr
+   to my-virt
+   dev-addr fff not and to dev-addr
+   dev-addr to tmp-dev-addr
+
+   my-virt my-size                    ( virt size )
    bounds                             ( v+s virt )
    swap fff + fff not and             \ Align end to next 4k boundary
    swap fff not and                   ( v+s' virt' )
    ?DO
-      \ ." unmapping " i . cr
-      dma-window-liobn                \ liobn
-      i dma-virt2dev                  \ ioba
-      i                               \ Lowest bits not set => invalid TCE
-      ( liobn ioba tce )
-      hv-put-tce ABORT" H_PUT_TCE failed"
+       \ ." unmapping " i . cr
+       dma-window-liobn                \ liobn
+       tmp-dev-addr                    \ ioba
+       i                               \ Lowest bits not set => invalid TCE
+       ( liobn ioba tce )
+       hv-put-tce ABORT" H_PUT_TCE failed"
+       tmp-dev-addr 1000 + to tmp-dev-addr
    1000 +LOOP
+   bm-handle dev-addr my-size bm-free
    (clear-dma-window-vars)
 ;
 
@@ -196,6 +232,8 @@ setup-puid
    0  pci-max-mem !
    0  pci-next-mmio !
    0  pci-max-mmio !
+   0  pci-next-mem64 !
+   0  pci-max-mem64 !
 
    \ Now get the "ranges" property
    s" ranges" get-node get-property 0<> ABORT" ranges property not found"
@@ -223,8 +261,9 @@ setup-puid
             r> + pci-max-mmio !                 \ calc max MMIO address
          ENDOF
          3000000 OF                             \ 64-bit memory space?
-            cr ." Warning: 64-bit PCI space not supported yet! "
-            decode-64 . decode-64 . cr
+	    decode-64 pci-next-mem64 !
+	    decode-64 drop                      \ Forget the parent address
+	    decode-64 pci-max-mem64 !
          ENDOF
       ENDCASE
    REPEAT
@@ -238,6 +277,8 @@ setup-puid
      ." pci-max-mem   = " pci-max-mem  @ . cr
      ." pci-next-mmio = " pci-next-mmio @ . cr
      ." pci-max-mmio  = " pci-max-mmio @ . cr
+     ." pci-next-mem64  = " pci-next-mem64 @ . cr
+     ." pci-max-mem64   = " pci-max-mem64  @ . cr
    THEN
 ;
 
@@ -247,6 +288,7 @@ setup-puid
    puid >r                          \ Save old value of puid
    my-puid TO puid                  \ Set current puid
    phb-parse-ranges
+   1 TO pci-hotplug-enabled
    1 0 (probe-pci-host-bridge)
    r> TO puid                       \ Restore previous puid
 ;

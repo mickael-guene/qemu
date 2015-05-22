@@ -92,7 +92,8 @@ static void omap_sdrc_write(void *opaque, hwaddr addr,
     struct omap_sdrc_s *s = (struct omap_sdrc_s *) opaque;
 
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -161,7 +162,7 @@ struct omap_sdrc_s *omap_sdrc_init(MemoryRegion *sysmem,
 
     omap_sdrc_reset(s);
 
-    memory_region_init_io(&s->iomem, &omap_sdrc_ops, s, "omap.sdrc", 0x1000);
+    memory_region_init_io(&s->iomem, NULL, &omap_sdrc_ops, s, "omap.sdrc", 0x1000);
     memory_region_add_subregion(sysmem, base, &s->iomem);
 
     return s;

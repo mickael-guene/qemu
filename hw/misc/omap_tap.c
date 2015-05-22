@@ -95,7 +95,8 @@ static void omap_tap_write(void *opaque, hwaddr addr,
                            uint64_t value, unsigned size)
 {
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     OMAP_BAD_REG(addr);
@@ -110,7 +111,7 @@ static const MemoryRegionOps omap_tap_ops = {
 void omap_tap_init(struct omap_target_agent_s *ta,
                 struct omap_mpu_state_s *mpu)
 {
-    memory_region_init_io(&mpu->tap_iomem, &omap_tap_ops, mpu, "omap.tap",
+    memory_region_init_io(&mpu->tap_iomem, NULL, &omap_tap_ops, mpu, "omap.tap",
                           omap_l4_region_size(ta, 0));
     omap_l4_attach(ta, 0, &mpu->tap_iomem);
 }

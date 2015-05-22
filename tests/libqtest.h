@@ -17,10 +17,13 @@
 #ifndef LIBQTEST_H
 #define LIBQTEST_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <sys/types.h>
+#include "qapi/qmp/qdict.h"
+#include "glib-compat.h"
 
 typedef struct QTestState QTestState;
 
@@ -43,13 +46,32 @@ QTestState *qtest_init(const char *extra_args);
 void qtest_quit(QTestState *s);
 
 /**
+ * qtest_qmp_discard_response:
+ * @s: #QTestState instance to operate on.
+ * @fmt...: QMP message to send to qemu
+ *
+ * Sends a QMP message to QEMU and consumes the response.
+ */
+void qtest_qmp_discard_response(QTestState *s, const char *fmt, ...);
+
+/**
  * qtest_qmp:
  * @s: #QTestState instance to operate on.
  * @fmt...: QMP message to send to qemu
  *
- * Sends a QMP message to QEMU
+ * Sends a QMP message to QEMU and returns the response.
  */
-void qtest_qmp(QTestState *s, const char *fmt, ...);
+QDict *qtest_qmp(QTestState *s, const char *fmt, ...);
+
+/**
+ * qtest_qmpv_discard_response:
+ * @s: #QTestState instance to operate on.
+ * @fmt: QMP message to send to QEMU
+ * @ap: QMP message arguments
+ *
+ * Sends a QMP message to QEMU and consumes the response.
+ */
+void qtest_qmpv_discard_response(QTestState *s, const char *fmt, va_list ap);
 
 /**
  * qtest_qmpv:
@@ -57,9 +79,17 @@ void qtest_qmp(QTestState *s, const char *fmt, ...);
  * @fmt: QMP message to send to QEMU
  * @ap: QMP message arguments
  *
- * Sends a QMP message to QEMU.
+ * Sends a QMP message to QEMU and returns the response.
  */
-void qtest_qmpv(QTestState *s, const char *fmt, va_list ap);
+QDict *qtest_qmpv(QTestState *s, const char *fmt, va_list ap);
+
+/**
+ * qtest_receive:
+ * @s: #QTestState instance to operate on.
+ *
+ * Reads a QMP message from QEMU and returns the response.
+ */
+QDict *qtest_qmp_receive(QTestState *s);
 
 /**
  * qtest_get_irq:
@@ -254,12 +284,23 @@ void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size);
 void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size);
 
 /**
+ * qtest_memset:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to write to.
+ * @patt: Byte pattern to fill the guest memory region with.
+ * @size: Number of bytes to write.
+ *
+ * Write a pattern to guest memory.
+ */
+void qtest_memset(QTestState *s, uint64_t addr, uint8_t patt, size_t size);
+
+/**
  * qtest_clock_step_next:
  * @s: #QTestState instance to operate on.
  *
- * Advance the vm_clock to the next deadline.
+ * Advance the QEMU_CLOCK_VIRTUAL to the next deadline.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 int64_t qtest_clock_step_next(QTestState *s);
 
@@ -268,9 +309,9 @@ int64_t qtest_clock_step_next(QTestState *s);
  * @s: QTestState instance to operate on.
  * @step: Number of nanoseconds to advance the clock by.
  *
- * Advance the vm_clock by @step nanoseconds.
+ * Advance the QEMU_CLOCK_VIRTUAL by @step nanoseconds.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 int64_t qtest_clock_step(QTestState *s, int64_t step);
 
@@ -279,9 +320,9 @@ int64_t qtest_clock_step(QTestState *s, int64_t step);
  * @s: QTestState instance to operate on.
  * @val: Nanoseconds value to advance the clock to.
  *
- * Advance the vm_clock to @val nanoseconds since the VM was launched.
+ * Advance the QEMU_CLOCK_VIRTUAL to @val nanoseconds since the VM was launched.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 int64_t qtest_clock_set(QTestState *s, int64_t val);
 
@@ -304,6 +345,38 @@ const char *qtest_get_arch(void);
 void qtest_add_func(const char *str, void (*fn));
 
 /**
+ * qtest_add_data_func:
+ * @str: Test case path.
+ * @data: Test case data
+ * @fn: Test case function
+ *
+ * Add a GTester testcase with the given name, data and function.
+ * The path is prefixed with the architecture under test, as
+ * returned by qtest_get_arch().
+ */
+void qtest_add_data_func(const char *str, const void *data, void (*fn));
+
+/**
+ * qtest_add:
+ * @testpath: Test case path
+ * @Fixture: Fixture type
+ * @tdata: Test case data
+ * @fsetup: Test case setup function
+ * @ftest: Test case function
+ * @fteardown: Test case teardown function
+ *
+ * Add a GTester testcase with the given name, data and functions.
+ * The path is prefixed with the architecture under test, as
+ * returned by qtest_get_arch().
+ */
+#define qtest_add(testpath, Fixture, tdata, fsetup, ftest, fteardown) \
+    do { \
+        char *path = g_strdup_printf("/%s/%s", qtest_get_arch(), testpath); \
+        g_test_add(path, Fixture, tdata, fsetup, ftest, fteardown); \
+        g_free(path); \
+    } while (0)
+
+/**
  * qtest_start:
  * @args: other arguments to pass to QEMU
  *
@@ -319,18 +392,40 @@ static inline QTestState *qtest_start(const char *args)
 }
 
 /**
+ * qtest_end:
+ *
+ * Shut down the QEMU process started by qtest_start().
+ */
+static inline void qtest_end(void)
+{
+    qtest_quit(global_qtest);
+    global_qtest = NULL;
+}
+
+/**
  * qmp:
  * @fmt...: QMP message to send to qemu
  *
- * Sends a QMP message to QEMU
+ * Sends a QMP message to QEMU and returns the response.
  */
-static inline void qmp(const char *fmt, ...)
-{
-    va_list ap;
+QDict *qmp(const char *fmt, ...);
 
-    va_start(ap, fmt);
-    qtest_qmpv(global_qtest, fmt, ap);
-    va_end(ap);
+/**
+ * qmp_discard_response:
+ * @fmt...: QMP message to send to qemu
+ *
+ * Sends a QMP message to QEMU and consumes the response.
+ */
+void qmp_discard_response(const char *fmt, ...);
+
+/**
+ * qmp_receive:
+ *
+ * Reads a QMP message from QEMU and returns the response.
+ */
+static inline QDict *qmp_receive(void)
+{
+    return qtest_qmp_receive(global_qtest);
 }
 
 /**
@@ -570,11 +665,24 @@ static inline void memwrite(uint64_t addr, const void *data, size_t size)
 }
 
 /**
+ * qmemset:
+ * @addr: Guest address to write to.
+ * @patt: Byte pattern to fill the guest memory region with.
+ * @size: Number of bytes to write.
+ *
+ * Write a pattern to guest memory.
+ */
+static inline void qmemset(uint64_t addr, uint8_t patt, size_t size)
+{
+    qtest_memset(global_qtest, addr, patt, size);
+}
+
+/**
  * clock_step_next:
  *
- * Advance the vm_clock to the next deadline.
+ * Advance the QEMU_CLOCK_VIRTUAL to the next deadline.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 static inline int64_t clock_step_next(void)
 {
@@ -585,9 +693,9 @@ static inline int64_t clock_step_next(void)
  * clock_step:
  * @step: Number of nanoseconds to advance the clock by.
  *
- * Advance the vm_clock by @step nanoseconds.
+ * Advance the QEMU_CLOCK_VIRTUAL by @step nanoseconds.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 static inline int64_t clock_step(int64_t step)
 {
@@ -598,13 +706,20 @@ static inline int64_t clock_step(int64_t step)
  * clock_set:
  * @val: Nanoseconds value to advance the clock to.
  *
- * Advance the vm_clock to @val nanoseconds since the VM was launched.
+ * Advance the QEMU_CLOCK_VIRTUAL to @val nanoseconds since the VM was launched.
  *
- * Returns: The current value of the vm_clock in nanoseconds.
+ * Returns: The current value of the QEMU_CLOCK_VIRTUAL in nanoseconds.
  */
 static inline int64_t clock_set(int64_t val)
 {
     return qtest_clock_set(global_qtest, val);
 }
+
+/**
+ * qtest_big_endian:
+ *
+ * Returns: True if the architecture under test has a big endian configuration.
+ */
+bool qtest_big_endian(void);
 
 #endif

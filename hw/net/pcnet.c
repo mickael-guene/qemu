@@ -40,6 +40,7 @@
 #include "qemu/timer.h"
 #include "qemu/sockets.h"
 #include "sysemu/sysemu.h"
+#include "trace.h"
 
 #include "pcnet.h"
 
@@ -685,9 +686,7 @@ static void pcnet_bcr_writew(PCNetState *s, uint32_t rap, uint32_t val);
 
 static void pcnet_s_reset(PCNetState *s)
 {
-#ifdef PCNET_DEBUG
-    printf("pcnet_s_reset\n");
-#endif
+    trace_pcnet_s_reset(s);
 
     s->rdra = 0;
     s->tdra = 0;
@@ -717,7 +716,6 @@ static void pcnet_s_reset(PCNetState *s)
     s->csr[89]  = 0x0262;
     s->csr[94]  = 0x0000;
     s->csr[100] = 0x0200;
-    s->csr[103] = 0x0105;
     s->csr[103] = 0x0105;
     s->csr[112] = 0x0000;
     s->csr[114] = 0x0000;
@@ -761,9 +759,7 @@ static void pcnet_update_irq(PCNetState *s)
         s->csr[4] |= 0x0040;
         s->csr[0] |= 0x0080;
         isr = 1;
-#ifdef PCNET_DEBUG
-        printf("pcnet user int\n");
-#endif
+        trace_pcnet_user_int(s);
     }
 
 #if 1
@@ -778,9 +774,7 @@ static void pcnet_update_irq(PCNetState *s)
     }
 
     if (isr != s->isr) {
-#ifdef PCNET_DEBUG
-        printf("pcnet: INTA=%d\n", isr);
-#endif
+        trace_pcnet_isr_change(s, isr, s->isr);
     }
     qemu_set_irq(s->irq, isr);
     s->isr = isr;
@@ -792,9 +786,7 @@ static void pcnet_init(PCNetState *s)
     uint16_t padr[3], ladrf[4], mode;
     uint32_t rdra, tdra;
 
-#ifdef PCNET_DEBUG
-    printf("pcnet_init init_addr=0x%08x\n", PHYSADDR(s,CSR_IADR(s)));
-#endif
+    trace_pcnet_init(s, PHYSADDR(s, CSR_IADR(s)));
 
     if (BCR_SSIZE32(s)) {
         struct pcnet_initblk32 initblk;
@@ -832,9 +824,7 @@ static void pcnet_init(PCNetState *s)
         tdra &= 0x00ffffff;
     }
 
-#if defined(PCNET_DEBUG)
-    printf("rlen=%d tlen=%d\n", rlen, tlen);
-#endif
+    trace_pcnet_rlen_tlen(s, rlen, tlen);
 
     CSR_RCVRL(s) = (rlen < 9) ? (1 << rlen) : 512;
     CSR_XMTRL(s) = (tlen < 9) ? (1 << tlen) : 512;
@@ -853,14 +843,13 @@ static void pcnet_init(PCNetState *s)
     CSR_RCVRC(s) = CSR_RCVRL(s);
     CSR_XMTRC(s) = CSR_XMTRL(s);
 
-#ifdef PCNET_DEBUG
-    printf("pcnet ss32=%d rdra=0x%08x[%d] tdra=0x%08x[%d]\n",
-        BCR_SSIZE32(s),
-        s->rdra, CSR_RCVRL(s), s->tdra, CSR_XMTRL(s));
-#endif
+    trace_pcnet_ss32_rdra_tdra(s, BCR_SSIZE32(s),
+                               s->rdra, CSR_RCVRL(s), s->tdra, CSR_XMTRL(s));
 
     s->csr[0] |= 0x0101;
     s->csr[0] &= ~0x0004;       /* clear STOP bit */
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 static void pcnet_start(PCNetState *s)
@@ -878,6 +867,8 @@ static void pcnet_start(PCNetState *s)
     s->csr[0] &= ~0x0004;       /* clear STOP bit */
     s->csr[0] |= 0x0002;
     pcnet_poll_timer(s);
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 static void pcnet_stop(PCNetState *s)
@@ -1209,7 +1200,7 @@ static void pcnet_transmit(PCNetState *s)
     hwaddr xmit_cxda = 0;
     int count = CSR_XMTRL(s)-1;
     int add_crc = 0;
-
+    int bcnt;
     s->xmit_pos = -1;
 
     if (!CSR_TXON(s)) {
@@ -1244,34 +1235,39 @@ static void pcnet_transmit(PCNetState *s)
             s->xmit_pos = -1;
             goto txdone;
         }
-        if (!GET_FIELD(tmd.status, TMDS, ENP)) {
-            int bcnt = 4096 - GET_FIELD(tmd.length, TMDL, BCNT);
-            s->phys_mem_read(s->dma_opaque, PHYSADDR(s, tmd.tbadr),
-                             s->buffer + s->xmit_pos, bcnt, CSR_BSWP(s));
-            s->xmit_pos += bcnt;
-        } else if (s->xmit_pos >= 0) {
-            int bcnt = 4096 - GET_FIELD(tmd.length, TMDL, BCNT);
-            s->phys_mem_read(s->dma_opaque, PHYSADDR(s, tmd.tbadr),
-                             s->buffer + s->xmit_pos, bcnt, CSR_BSWP(s));
-            s->xmit_pos += bcnt;
-#ifdef PCNET_DEBUG
-            printf("pcnet_transmit size=%d\n", s->xmit_pos);
-#endif
-            if (CSR_LOOP(s)) {
-                if (BCR_SWSTYLE(s) == 1)
-                    add_crc = !GET_FIELD(tmd.status, TMDS, NOFCS);
-                s->looptest = add_crc ? PCNET_LOOPTEST_CRC : PCNET_LOOPTEST_NOCRC;
-                pcnet_receive(qemu_get_queue(s->nic), s->buffer, s->xmit_pos);
-                s->looptest = 0;
-            } else
-                if (s->nic)
-                    qemu_send_packet(qemu_get_queue(s->nic), s->buffer,
-                                     s->xmit_pos);
 
-            s->csr[0] &= ~0x0008;   /* clear TDMD */
-            s->csr[4] |= 0x0004;    /* set TXSTRT */
-            s->xmit_pos = -1;
+        if (s->xmit_pos < 0) {
+            goto txdone;
         }
+
+        bcnt = 4096 - GET_FIELD(tmd.length, TMDL, BCNT);
+        s->phys_mem_read(s->dma_opaque, PHYSADDR(s, tmd.tbadr),
+                         s->buffer + s->xmit_pos, bcnt, CSR_BSWP(s));
+        s->xmit_pos += bcnt;
+        
+        if (!GET_FIELD(tmd.status, TMDS, ENP)) {
+            goto txdone;
+        }
+
+#ifdef PCNET_DEBUG
+        printf("pcnet_transmit size=%d\n", s->xmit_pos);
+#endif
+        if (CSR_LOOP(s)) {
+            if (BCR_SWSTYLE(s) == 1)
+                add_crc = !GET_FIELD(tmd.status, TMDS, NOFCS);
+            s->looptest = add_crc ? PCNET_LOOPTEST_CRC : PCNET_LOOPTEST_NOCRC;
+            pcnet_receive(qemu_get_queue(s->nic), s->buffer, s->xmit_pos);
+            s->looptest = 0;
+        } else {
+            if (s->nic) {
+                qemu_send_packet(qemu_get_queue(s->nic), s->buffer,
+                                 s->xmit_pos);
+            }
+        }
+
+        s->csr[0] &= ~0x0008;   /* clear TDMD */
+        s->csr[4] |= 0x0004;    /* set TXSTRT */
+        s->xmit_pos = -1;
 
     txdone:
         SET_FIELD(&tmd.status, TMDS, OWN, 0);
@@ -1327,7 +1323,7 @@ static void pcnet_poll_timer(void *opaque)
 {
     PCNetState *s = opaque;
 
-    qemu_del_timer(s->poll_timer);
+    timer_del(s->poll_timer);
 
     if (CSR_TDMD(s)) {
         pcnet_transmit(s);
@@ -1336,7 +1332,7 @@ static void pcnet_poll_timer(void *opaque)
     pcnet_update_irq(s);
 
     if (!CSR_STOP(s) && !CSR_SPND(s) && !CSR_DPOLL(s)) {
-        uint64_t now = qemu_get_clock_ns(vm_clock) * 33;
+        uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 33;
         if (!s->timer || !now)
             s->timer = now;
         else {
@@ -1347,8 +1343,8 @@ static void pcnet_poll_timer(void *opaque)
             } else
                 CSR_POLL(s) = t;
         }
-        qemu_mod_timer(s->poll_timer,
-            pcnet_get_next_poll_time(s,qemu_get_clock_ns(vm_clock)));
+        timer_mod(s->poll_timer,
+            pcnet_get_next_poll_time(s,qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)));
     }
 }
 
@@ -1697,8 +1693,7 @@ const VMStateDescription vmstate_pcnet = {
     .name = "pcnet",
     .version_id = 3,
     .minimum_version_id = 2,
-    .minimum_version_id_old = 2,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_INT32(rap, PCNetState),
         VMSTATE_INT32(isr, PCNetState),
         VMSTATE_INT32(lnkst, PCNetState),
@@ -1712,28 +1707,21 @@ const VMStateDescription vmstate_pcnet = {
         VMSTATE_BUFFER(buffer, PCNetState),
         VMSTATE_UNUSED_TEST(is_version_2, 4),
         VMSTATE_INT32(tx_busy, PCNetState),
-        VMSTATE_TIMER(poll_timer, PCNetState),
+        VMSTATE_TIMER_PTR(poll_timer, PCNetState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-void pcnet_common_cleanup(PCNetState *d)
-{
-    d->nic = NULL;
-}
-
-int pcnet_common_init(DeviceState *dev, PCNetState *s, NetClientInfo *info)
+void pcnet_common_init(DeviceState *dev, PCNetState *s, NetClientInfo *info)
 {
     int i;
     uint16_t checksum;
 
-    s->poll_timer = qemu_new_timer_ns(vm_clock, pcnet_poll_timer, s);
+    s->poll_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pcnet_poll_timer, s);
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(info, &s->conf, object_get_typename(OBJECT(dev)), dev->id, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
-
-    add_boot_device_path(s->conf.bootindex, dev, "/ethernet-phy@0");
 
     /* Initialize the PROM */
 
@@ -1763,6 +1751,4 @@ int pcnet_common_init(DeviceState *dev, PCNetState *s, NetClientInfo *info)
     *(uint16_t *)&s->prom[12] = cpu_to_le16(checksum);
 
     s->lnkst = 0x40; /* initial link state: up */
-
-    return 0;
 }

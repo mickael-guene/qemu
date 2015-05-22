@@ -112,7 +112,8 @@ static void omap_uart_write(void *opaque, hwaddr addr,
     struct omap_uart_s *s = (struct omap_uart_s *) opaque;
 
     if (size == 4) {
-        return omap_badwidth_write8(opaque, addr, value);
+        omap_badwidth_write8(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -168,7 +169,7 @@ struct omap_uart_s *omap2_uart_init(MemoryRegion *sysmem,
     struct omap_uart_s *s = omap_uart_init(base, irq,
                     fclk, iclk, txdma, rxdma, label, chr);
 
-    memory_region_init_io(&s->iomem, &omap_uart_ops, s, "omap.uart", 0x100);
+    memory_region_init_io(&s->iomem, NULL, &omap_uart_ops, s, "omap.uart", 0x100);
 
     s->ta = ta;
 

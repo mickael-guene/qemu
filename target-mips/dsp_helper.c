@@ -18,7 +18,7 @@
  */
 
 #include "cpu.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
 #include "qemu/bitops.h"
 
 /* As the byte ordering doesn't matter, i.e. all columns are treated
@@ -74,15 +74,6 @@ static inline void set_DSPControl_24(uint32_t flag, int len, CPUMIPSState *env)
 
   env->active_tc.DSPControl &= filter;
   env->active_tc.DSPControl |= (target_ulong)flag << 24;
-}
-
-static inline uint32_t get_DSPControl_24(int len, CPUMIPSState *env)
-{
-  uint32_t filter;
-
-  filter = (0x01 << len) - 1;
-
-  return (env->active_tc.DSPControl >> 24) & filter;
 }
 
 static inline void set_DSPControl_pos(uint32_t pos, CPUMIPSState *env)
@@ -283,6 +274,7 @@ static inline int32_t mipsdsp_sat32_acc_q31(int32_t acc, int32_t a,
     return result;
 }
 
+#ifdef TARGET_MIPS64
 /* a[0] is LO, a[1] is HI. */
 static inline void mipsdsp_sat64_acc_add_q63(int64_t *ret,
                                              int32_t ac,
@@ -336,6 +328,7 @@ static inline void mipsdsp_sat64_acc_sub_q63(int64_t *ret,
         set_DSPControl_overflow_flag(1, 16 + ac, env);
     }
 }
+#endif
 
 static inline int32_t mipsdsp_mul_i16_i16(int16_t a, int16_t b,
                                           CPUMIPSState *env)
@@ -357,10 +350,12 @@ static inline int32_t mipsdsp_mul_u16_u16(int32_t a, int32_t b)
     return a * b;
 }
 
+#ifdef TARGET_MIPS64
 static inline int32_t mipsdsp_mul_i32_i32(int32_t a, int32_t b)
 {
     return a * b;
 }
+#endif
 
 static inline int32_t mipsdsp_sat16_mul_i16_i16(int16_t a, int16_t b,
                                                 CPUMIPSState *env)
@@ -390,7 +385,7 @@ static inline int32_t mipsdsp_mul_q15_q15_overflowflag21(uint16_t a, uint16_t b,
         temp = 0x7FFFFFFF;
         set_DSPControl_overflow_flag(1, 21, env);
     } else {
-        temp = ((int32_t)(int16_t)a * (int32_t)(int16_t)b) << 1;
+        temp = ((int16_t)a * (int16_t)b) << 1;
     }
 
     return temp;
@@ -417,10 +412,12 @@ static inline int16_t mipsdsp_rashift16(int16_t a, target_ulong mov)
     return a >> mov;
 }
 
+#ifdef TARGET_MIPS64
 static inline int32_t mipsdsp_rashift32(int32_t a, target_ulong mov)
 {
     return a >> mov;
 }
+#endif
 
 static inline int16_t mipsdsp_rshift1_add_q16(int16_t a, int16_t b)
 {
@@ -479,6 +476,7 @@ static inline uint8_t mipsdsp_rrshift1_add_u8(uint8_t a, uint8_t b)
     return (temp >> 1) & 0x00FF;
 }
 
+#ifdef TARGET_MIPS64
 static inline uint8_t mipsdsp_rshift1_sub_u8(uint8_t a, uint8_t b)
 {
     uint16_t temp;
@@ -496,6 +494,7 @@ static inline uint8_t mipsdsp_rrshift1_sub_u8(uint8_t a, uint8_t b)
 
     return (temp >> 1) & 0x00FF;
 }
+#endif
 
 /*  128 bits long. p[0] is LO, p[1] is HI. */
 static inline void mipsdsp_rndrashift_short_acc(int64_t *p,
@@ -511,6 +510,7 @@ static inline void mipsdsp_rndrashift_short_acc(int64_t *p,
     p[1] = (acc >> 63) & 0x01;
 }
 
+#ifdef TARGET_MIPS64
 /* 128 bits long. p[0] is LO, p[1] is HI */
 static inline void mipsdsp_rashift_acc(uint64_t *p,
                                        uint32_t ac,
@@ -558,6 +558,7 @@ static inline void mipsdsp_rndrashift_acc(uint64_t *p,
         }
     }
 }
+#endif
 
 static inline int32_t mipsdsp_mul_q15_q15(int32_t ac, uint16_t a, uint16_t b,
                                           CPUMIPSState *env)
@@ -583,7 +584,7 @@ static inline int64_t mipsdsp_mul_q31_q31(int32_t ac, uint32_t a, uint32_t b,
         temp = (0x01ull << 63) - 1;
         set_DSPControl_overflow_flag(1, 16 + ac, env);
     } else {
-        temp = ((uint64_t)a * (uint64_t)b) << 1;
+        temp = ((int64_t)(int32_t)a * (int32_t)b) << 1;
     }
 
     return temp;
@@ -608,10 +609,12 @@ static inline uint16_t mipsdsp_mul_u8_u16(uint8_t a, uint16_t b,
     return tempI & 0x0000FFFF;
 }
 
+#ifdef TARGET_MIPS64
 static inline uint64_t mipsdsp_mul_u32_u32(uint32_t a, uint32_t b)
 {
     return (uint64_t)a * (uint64_t)b;
 }
+#endif
 
 static inline int16_t mipsdsp_rndq15_mul_q15_q15(uint16_t a, uint16_t b,
                                                  CPUMIPSState *env)
@@ -622,7 +625,7 @@ static inline int16_t mipsdsp_rndq15_mul_q15_q15(uint16_t a, uint16_t b,
         temp = 0x7FFF0000;
         set_DSPControl_overflow_flag(1, 21, env);
     } else {
-        temp = (a * b) << 1;
+        temp = ((int16_t)a * (int16_t)b) << 1;
         temp = temp + 0x00008000;
     }
 
@@ -648,16 +651,22 @@ static inline int32_t mipsdsp_sat16_mul_q15_q15(uint16_t a, uint16_t b,
 static inline uint16_t mipsdsp_trunc16_sat16_round(int32_t a,
                                                    CPUMIPSState *env)
 {
-    int64_t temp;
+    uint16_t temp;
 
-    temp = (int32_t)a + 0x00008000;
 
-    if (a > (int)0x7fff8000) {
-        temp = 0x7FFFFFFF;
+    /*
+     * The value 0x00008000 will be added to the input Q31 value, and the code
+     * needs to check if the addition causes an overflow. Since a positive value
+     * is added, overflow can happen in one direction only.
+     */
+    if (a > 0x7FFF7FFF) {
+        temp = 0x7FFF;
         set_DSPControl_overflow_flag(1, 22, env);
+    } else {
+        temp = ((a + 0x8000) >> 16) & 0xFFFF;
     }
 
-    return (temp >> 16) & 0xFFFF;
+    return temp;
 }
 
 static inline uint8_t mipsdsp_sat8_reduce_precision(uint16_t a,
@@ -711,7 +720,7 @@ static inline uint16_t mipsdsp_lshift16(uint16_t a, uint8_t s,
     return a << s;
 }
 
-
+#ifdef TARGET_MIPS64
 static inline uint32_t mipsdsp_lshift32(uint32_t a, uint8_t s,
                                         CPUMIPSState *env)
 {
@@ -728,6 +737,7 @@ static inline uint32_t mipsdsp_lshift32(uint32_t a, uint8_t s,
         return a << s;
     }
 }
+#endif
 
 static inline uint16_t mipsdsp_sat16_lshift(uint16_t a, uint8_t s,
                                             CPUMIPSState *env)
@@ -967,6 +977,7 @@ static inline uint8_t mipsdsp_satu8_sub(uint8_t a, uint8_t b, CPUMIPSState *env)
     return temp & 0x00FF;
 }
 
+#ifdef TARGET_MIPS64
 static inline uint32_t mipsdsp_sub32(int32_t a, int32_t b, CPUMIPSState *env)
 {
     int32_t temp;
@@ -991,6 +1002,7 @@ static inline int32_t mipsdsp_add_i32(int32_t a, int32_t b, CPUMIPSState *env)
 
     return temp;
 }
+#endif
 
 static inline int32_t mipsdsp_cmp_eq(int32_t a, int32_t b)
 {
@@ -1082,12 +1094,11 @@ static inline int32_t mipsdsp_cmpu_lt(uint32_t a, uint32_t b)
 target_ulong helper_##name(target_ulong rt, CPUMIPSState *env)             \
 {                                                                          \
     DSP32Value dt;                                                         \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                     \
                                                                            \
-    n = sizeof(DSP32Value) / sizeof(dt.element[0]);                        \
     dt.sw[0] = rt;                                                         \
                                                                            \
-    for (i = 0; i < n; i++) {                                              \
+    for (i = 0; i < ARRAY_SIZE(dt.element); i++) {                         \
         dt.element[i] = mipsdsp_##func(dt.element[i], env);                \
     }                                                                      \
                                                                            \
@@ -1103,12 +1114,11 @@ MIPSDSP32_UNOP_ENV(absq_s_w, sat_abs32, sw)
 target_ulong helper_##name(target_ulong rt, CPUMIPSState *env)             \
 {                                                                          \
     DSP64Value dt;                                                         \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                        \
                                                                            \
-    n = sizeof(DSP64Value) / sizeof(dt.element[0]);                        \
     dt.sl[0] = rt;                                                         \
                                                                            \
-    for (i = 0; i < n; i++) {                                              \
+    for (i = 0; i < ARRAY_SIZE(dt.element); i++) {                         \
         dt.element[i] = mipsdsp_##func(dt.element[i], env);                \
     }                                                                      \
                                                                            \
@@ -1124,13 +1134,12 @@ MIPSDSP64_UNOP_ENV(absq_s_pw, sat_abs32, sw)
 target_ulong helper_##name(target_ulong rs, target_ulong rt)               \
 {                                                                          \
     DSP32Value ds, dt;                                                     \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                        \
                                                                            \
-    n = sizeof(DSP32Value) / sizeof(ds.element[0]);                        \
     ds.sw[0] = rs;                                                         \
     dt.sw[0] = rt;                                                         \
                                                                            \
-    for (i = 0; i < n; i++) {                                              \
+    for (i = 0; i < ARRAY_SIZE(ds.element); i++) {                         \
         ds.element[i] = mipsdsp_##func(ds.element[i], dt.element[i]);      \
     }                                                                      \
                                                                            \
@@ -1153,13 +1162,12 @@ target_ulong helper_##name(target_ulong rs, target_ulong rt,               \
                            CPUMIPSState *env)                              \
 {                                                                          \
     DSP32Value ds, dt;                                                     \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                        \
                                                                            \
-    n = sizeof(DSP32Value) / sizeof(ds.element[0]);                        \
     ds.sw[0] = rs;                                                         \
     dt.sw[0] = rt;                                                         \
                                                                            \
-    for (i = 0 ; i < n ; i++) {                                            \
+    for (i = 0 ; i < ARRAY_SIZE(ds.element); i++) {                        \
         ds.element[i] = mipsdsp_##func(ds.element[i], dt.element[i], env); \
     }                                                                      \
                                                                            \
@@ -1186,13 +1194,12 @@ MIPSDSP32_BINOP_ENV(subu_s_qb, satu8_sub, ub);
 target_ulong helper_##name(target_ulong rs, target_ulong rt)               \
 {                                                                          \
     DSP64Value ds, dt;                                                     \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                        \
                                                                            \
-    n = sizeof(DSP64Value) / sizeof(ds.element[0]);                        \
     ds.sl[0] = rs;                                                         \
     dt.sl[0] = rt;                                                         \
                                                                            \
-    for (i = 0 ; i < n ; i++) {                                            \
+    for (i = 0 ; i < ARRAY_SIZE(ds.element); i++) {                        \
         ds.element[i] = mipsdsp_##func(ds.element[i], dt.element[i]);      \
     }                                                                      \
                                                                            \
@@ -1209,13 +1216,12 @@ target_ulong helper_##name(target_ulong rs, target_ulong rt,               \
                            CPUMIPSState *env)                              \
 {                                                                          \
     DSP64Value ds, dt;                                                     \
-    unsigned int i, n;                                                     \
+    unsigned int i;                                                        \
                                                                            \
-    n = sizeof(DSP64Value) / sizeof(ds.element[0]);                        \
     ds.sl[0] = rs;                                                         \
     dt.sl[0] = rt;                                                         \
                                                                            \
-    for (i = 0 ; i < n ; i++) {                                            \
+    for (i = 0 ; i < ARRAY_SIZE(ds.element); i++) {                        \
         ds.element[i] = mipsdsp_##func(ds.element[i], dt.element[i], env); \
     }                                                                      \
                                                                            \
@@ -2902,13 +2908,13 @@ target_ulong helper_bitrev(target_ulong rt)
     return (target_ulong)rd;
 }
 
-#define BIT_INSV(name, posfilter, sizefilter, ret_type)         \
+#define BIT_INSV(name, posfilter, ret_type)                     \
 target_ulong helper_##name(CPUMIPSState *env, target_ulong rs,  \
                            target_ulong rt)                     \
 {                                                               \
     uint32_t pos, size, msb, lsb;                               \
-    target_ulong filter;                                        \
-    target_ulong temp, temprs, temprt;                          \
+    uint32_t const sizefilter = 0x3F;                           \
+    target_ulong temp;                                          \
     target_ulong dspc;                                          \
                                                                 \
     dspc = env->active_tc.DSPControl;                           \
@@ -2923,18 +2929,14 @@ target_ulong helper_##name(CPUMIPSState *env, target_ulong rs,  \
         return rt;                                              \
     }                                                           \
                                                                 \
-    filter = ((int64_t)0x01 << size) - 1;                       \
-    filter = filter << pos;                                     \
-    temprs = (rs << pos) & filter;                              \
-    temprt = rt & ~filter;                                      \
-    temp = temprs | temprt;                                     \
+    temp = deposit64(rt, pos, size, rs);                        \
                                                                 \
     return (target_long)(ret_type)temp;                         \
 }
 
-BIT_INSV(insv, 0x1F, 0x3F, int32_t);
+BIT_INSV(insv, 0x1F, int32_t);
 #ifdef TARGET_MIPS64
-BIT_INSV(dinsv, 0x7F, 0x3F, target_long);
+BIT_INSV(dinsv, 0x7F, target_long);
 #endif
 
 #undef BIT_INSV
@@ -3676,7 +3678,7 @@ void cpu_wrdsp(uint32_t rs, uint32_t mask_num, CPUMIPSState *env)
 
 void helper_wrdsp(target_ulong rs, target_ulong mask_num, CPUMIPSState *env)
 {
-    return cpu_wrdsp(rs, mask_num, env);
+    cpu_wrdsp(rs, mask_num, env);
 }
 
 uint32_t cpu_rddsp(uint32_t mask_num, CPUMIPSState *env)

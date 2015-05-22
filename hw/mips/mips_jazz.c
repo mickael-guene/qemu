@@ -39,9 +39,11 @@
 #include "hw/timer/mc146818rtc.h"
 #include "hw/timer/i8254.h"
 #include "hw/audio/pcspk.h"
-#include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "hw/sysbus.h"
 #include "exec/address-spaces.h"
+#include "sysemu/qtest.h"
+#include "qemu/error-report.h"
 
 enum jazz_model_e
 {
@@ -58,13 +60,16 @@ static void main_cpu_reset(void *opaque)
 
 static uint64_t rtc_read(void *opaque, hwaddr addr, unsigned size)
 {
-    return cpu_inw(0x71);
+    uint8_t val;
+    address_space_read(&address_space_memory, 0x90000071, &val, 1);
+    return val;
 }
 
 static void rtc_write(void *opaque, hwaddr addr,
                       uint64_t val, unsigned size)
 {
-    cpu_outw(0x71, val & 0xff);
+    uint8_t buf = val & 0xff;
+    address_space_write(&address_space_memory, 0x90000071, &buf, 1);
 }
 
 static const MemoryRegionOps rtc_ops = {
@@ -99,26 +104,40 @@ static const MemoryRegionOps dma_dummy_ops = {
 
 static void cpu_request_exit(void *opaque, int irq, int level)
 {
-    CPUMIPSState *env = cpu_single_env;
+    CPUState *cpu = current_cpu;
 
-    if (env && level) {
-        cpu_exit(env);
+    if (cpu && level) {
+        cpu_exit(cpu);
     }
 }
 
-static void mips_jazz_init(MemoryRegion *address_space,
-                           MemoryRegion *address_space_io,
-                           ram_addr_t ram_size,
-                           const char *cpu_model,
+static CPUUnassignedAccess real_do_unassigned_access;
+static void mips_jazz_do_unassigned_access(CPUState *cpu, hwaddr addr,
+                                           bool is_write, bool is_exec,
+                                           int opaque, unsigned size)
+{
+    if (!is_exec) {
+        /* ignore invalid access (ie do not raise exception) */
+        return;
+    }
+    (*real_do_unassigned_access)(cpu, addr, is_write, is_exec, opaque, size);
+}
+
+static void mips_jazz_init(MachineState *machine,
                            enum jazz_model_e jazz_model)
 {
+    MemoryRegion *address_space = get_system_memory();
+    const char *cpu_model = machine->cpu_model;
     char *filename;
     int bios_size, n;
     MIPSCPU *cpu;
+    CPUClass *cc;
     CPUMIPSState *env;
     qemu_irq *rc4030, *i8259;
     rc4030_dma *dmas;
     void* rc4030_opaque;
+    MemoryRegion *isa_mem = g_new(MemoryRegion, 1);
+    MemoryRegion *isa_io = g_new(MemoryRegion, 1);
     MemoryRegion *rtc = g_new(MemoryRegion, 1);
     MemoryRegion *i8042 = g_new(MemoryRegion, 1);
     MemoryRegion *dma_dummy = g_new(MemoryRegion, 1);
@@ -151,15 +170,27 @@ static void mips_jazz_init(MemoryRegion *address_space,
     env = &cpu->env;
     qemu_register_reset(main_cpu_reset, cpu);
 
+    /* Chipset returns 0 in invalid reads and do not raise data exceptions.
+     * However, we can't simply add a global memory region to catch
+     * everything, as memory core directly call unassigned_mem_read/write
+     * on some invalid accesses, which call do_unassigned_access on the
+     * CPU, which raise an exception.
+     * Handle that case by hijacking the do_unassigned_access method on
+     * the CPU, and do not raise exceptions for data access. */
+    cc = CPU_GET_CLASS(cpu);
+    real_do_unassigned_access = cc->do_unassigned_access;
+    cc->do_unassigned_access = mips_jazz_do_unassigned_access;
+
     /* allocate RAM */
-    memory_region_init_ram(ram, "mips_jazz.ram", ram_size);
-    vmstate_register_ram_global(ram);
+    memory_region_allocate_system_memory(ram, NULL, "mips_jazz.ram",
+                                         machine->ram_size);
     memory_region_add_subregion(address_space, 0, ram);
 
-    memory_region_init_ram(bios, "mips_jazz.bios", MAGNUM_BIOS_SIZE);
+    memory_region_init_ram(bios, NULL, "mips_jazz.bios", MAGNUM_BIOS_SIZE,
+                           &error_abort);
     vmstate_register_ram_global(bios);
     memory_region_set_readonly(bios, true);
-    memory_region_init_alias(bios2, "mips_jazz.bios", bios,
+    memory_region_init_alias(bios2, NULL, "mips_jazz.bios", bios,
                              0, MAGNUM_BIOS_SIZE);
     memory_region_add_subregion(address_space, 0x1fc00000LL, bios);
     memory_region_add_subregion(address_space, 0xfff00000LL, bios2);
@@ -175,9 +206,8 @@ static void mips_jazz_init(MemoryRegion *address_space,
     } else {
         bios_size = -1;
     }
-    if (bios_size < 0 || bios_size > MAGNUM_BIOS_SIZE) {
-        fprintf(stderr, "qemu: Could not load MIPS bios '%s'\n",
-                bios_name);
+    if ((bios_size < 0 || bios_size > MAGNUM_BIOS_SIZE) && !qtest_enabled()) {
+        error_report("Could not load MIPS bios '%s'", bios_name);
         exit(1);
     }
 
@@ -188,21 +218,23 @@ static void mips_jazz_init(MemoryRegion *address_space,
     /* Chipset */
     rc4030_opaque = rc4030_init(env->irq[6], env->irq[3], &rc4030, &dmas,
                                 address_space);
-    memory_region_init_io(dma_dummy, &dma_dummy_ops, NULL, "dummy_dma", 0x1000);
+    memory_region_init_io(dma_dummy, NULL, &dma_dummy_ops, NULL, "dummy_dma", 0x1000);
     memory_region_add_subregion(address_space, 0x8000d000, dma_dummy);
 
+    /* ISA bus: IO space at 0x90000000, mem space at 0x91000000 */
+    memory_region_init(isa_io, NULL, "isa-io", 0x00010000);
+    memory_region_init(isa_mem, NULL, "isa-mem", 0x01000000);
+    memory_region_add_subregion(address_space, 0x90000000, isa_io);
+    memory_region_add_subregion(address_space, 0x91000000, isa_mem);
+    isa_bus = isa_bus_new(NULL, isa_mem, isa_io);
+
     /* ISA devices */
-    isa_bus = isa_bus_new(NULL, address_space_io);
     i8259 = i8259_init(isa_bus, env->irq[4]);
     isa_bus_irqs(isa_bus, i8259);
     cpu_exit_irq = qemu_allocate_irqs(cpu_request_exit, NULL, 1);
     DMA_init(0, cpu_exit_irq);
     pit = pit_init(isa_bus, 0x40, 0, NULL);
     pcspk_init(isa_bus, pit);
-
-    /* ISA IO space at 0x90000000 */
-    isa_mmio_init(0x90000000, 0x01000000);
-    isa_mem_base = 0x11000000;
 
     /* Video card */
     switch (jazz_model) {
@@ -216,7 +248,8 @@ static void mips_jazz_init(MemoryRegion *address_space,
         {
             /* Simple ROM, so user doesn't have to provide one */
             MemoryRegion *rom_mr = g_new(MemoryRegion, 1);
-            memory_region_init_ram(rom_mr, "g364fb.rom", 0x80000);
+            memory_region_init_ram(rom_mr, NULL, "g364fb.rom", 0x80000,
+                                   &error_abort);
             vmstate_register_ram_global(rom_mr);
             memory_region_set_readonly(rom_mr, true);
             uint8_t *rom = memory_region_get_ram_ptr(rom_mr);
@@ -266,7 +299,7 @@ static void mips_jazz_init(MemoryRegion *address_space,
 
     /* Real time clock */
     rtc_init(isa_bus, 1980, NULL);
-    memory_region_init_io(rtc, &rtc_ops, NULL, "rtc", 0x1000);
+    memory_region_init_io(rtc, NULL, &rtc_ops, NULL, "rtc", 0x1000);
     memory_region_add_subregion(address_space, 0x80004000, rtc);
 
     /* Keyboard (i8042) */
@@ -301,21 +334,15 @@ static void mips_jazz_init(MemoryRegion *address_space,
 }
 
 static
-void mips_magnum_init(QEMUMachineInitArgs *args)
+void mips_magnum_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
-    const char *cpu_model = args->cpu_model;
-        mips_jazz_init(get_system_memory(), get_system_io(),
-                       ram_size, cpu_model, JAZZ_MAGNUM);
+    mips_jazz_init(machine, JAZZ_MAGNUM);
 }
 
 static
-void mips_pica61_init(QEMUMachineInitArgs *args)
+void mips_pica61_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
-    const char *cpu_model = args->cpu_model;
-    mips_jazz_init(get_system_memory(), get_system_io(),
-                   ram_size, cpu_model, JAZZ_PICA61);
+    mips_jazz_init(machine, JAZZ_PICA61);
 }
 
 static QEMUMachine mips_magnum_machine = {
@@ -323,7 +350,6 @@ static QEMUMachine mips_magnum_machine = {
     .desc = "MIPS Magnum",
     .init = mips_magnum_init,
     .block_default_type = IF_SCSI,
-    DEFAULT_MACHINE_OPTIONS,
 };
 
 static QEMUMachine mips_pica61_machine = {
@@ -331,7 +357,6 @@ static QEMUMachine mips_pica61_machine = {
     .desc = "Acer Pica 61",
     .init = mips_pica61_init,
     .block_default_type = IF_SCSI,
-    DEFAULT_MACHINE_OPTIONS,
 };
 
 static void mips_jazz_machine_init(void)

@@ -212,7 +212,8 @@ static void omap_diss_write(void *opaque, hwaddr addr,
     struct omap_dss_s *s = (struct omap_dss_s *) opaque;
 
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -377,7 +378,8 @@ static void omap_disc_write(void *opaque, hwaddr addr,
     struct omap_dss_s *s = (struct omap_dss_s *) opaque;
 
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -736,7 +738,8 @@ static void omap_rfbi_write(void *opaque, hwaddr addr,
     struct omap_dss_s *s = (struct omap_dss_s *) opaque;
 
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -928,7 +931,8 @@ static void omap_venc_write(void *opaque, hwaddr addr,
                             uint64_t value, unsigned size)
 {
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, size);
+        omap_badwidth_write32(opaque, addr, size);
+        return;
     }
 
     switch (addr) {
@@ -1016,7 +1020,8 @@ static void omap_im3_write(void *opaque, hwaddr addr,
                            uint64_t value, unsigned size)
 {
     if (size != 4) {
-        return omap_badwidth_write32(opaque, addr, value);
+        omap_badwidth_write32(opaque, addr, value);
+        return;
     }
 
     switch (addr) {
@@ -1053,15 +1058,15 @@ struct omap_dss_s *omap_dss_init(struct omap_target_agent_s *ta,
     s->drq = drq;
     omap_dss_reset(s);
 
-    memory_region_init_io(&s->iomem_diss1, &omap_diss_ops, s, "omap.diss1",
+    memory_region_init_io(&s->iomem_diss1, NULL, &omap_diss_ops, s, "omap.diss1",
                           omap_l4_region_size(ta, 0));
-    memory_region_init_io(&s->iomem_disc1, &omap_disc_ops, s, "omap.disc1",
+    memory_region_init_io(&s->iomem_disc1, NULL, &omap_disc_ops, s, "omap.disc1",
                           omap_l4_region_size(ta, 1));
-    memory_region_init_io(&s->iomem_rfbi1, &omap_rfbi_ops, s, "omap.rfbi1",
+    memory_region_init_io(&s->iomem_rfbi1, NULL, &omap_rfbi_ops, s, "omap.rfbi1",
                           omap_l4_region_size(ta, 2));
-    memory_region_init_io(&s->iomem_venc1, &omap_venc_ops, s, "omap.venc1",
+    memory_region_init_io(&s->iomem_venc1, NULL, &omap_venc_ops, s, "omap.venc1",
                           omap_l4_region_size(ta, 3));
-    memory_region_init_io(&s->iomem_im3, &omap_im3_ops, s,
+    memory_region_init_io(&s->iomem_im3, NULL, &omap_im3_ops, s,
                           "omap.im3", 0x1000);
 
     omap_l4_attach(ta, 0, &s->iomem_diss1);

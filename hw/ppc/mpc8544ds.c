@@ -15,39 +15,38 @@
 #include "hw/boards.h"
 #include "sysemu/device_tree.h"
 #include "hw/ppc/openpic.h"
+#include "qemu/error-report.h"
 
 static void mpc8544ds_fixup_devtree(PPCE500Params *params, void *fdt)
 {
     const char model[] = "MPC8544DS";
     const char compatible[] = "MPC8544DS\0MPC85xxDS";
 
-    qemu_devtree_setprop(fdt, "/", "model", model, sizeof(model));
-    qemu_devtree_setprop(fdt, "/", "compatible", compatible,
-                         sizeof(compatible));
+    qemu_fdt_setprop(fdt, "/", "model", model, sizeof(model));
+    qemu_fdt_setprop(fdt, "/", "compatible", compatible,
+                     sizeof(compatible));
 }
 
-static void mpc8544ds_init(QEMUMachineInitArgs *args)
+static void mpc8544ds_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
-    const char *boot_device = args->boot_device;
-    const char *cpu_model = args->cpu_model;
-    const char *kernel_filename = args->kernel_filename;
-    const char *kernel_cmdline = args->kernel_cmdline;
-    const char *initrd_filename = args->initrd_filename;
     PPCE500Params params = {
-        .ram_size = ram_size,
-        .boot_device = boot_device,
-        .kernel_filename = kernel_filename,
-        .kernel_cmdline = kernel_cmdline,
-        .initrd_filename = initrd_filename,
-        .cpu_model = cpu_model,
         .pci_first_slot = 0x11,
         .pci_nr_slots = 2,
         .fixup_devtree = mpc8544ds_fixup_devtree,
         .mpic_version = OPENPIC_MODEL_FSL_MPIC_20,
+        .ccsrbar_base = 0xE0000000ULL,
+        .pci_mmio_base = 0xC0000000ULL,
+        .pci_mmio_bus_base = 0xC0000000ULL,
+        .pci_pio_base = 0xE1000000ULL,
+        .spin_base = 0xEF000000ULL,
     };
 
-    ppce500_init(&params);
+    if (machine->ram_size > 0xc0000000) {
+        error_report("The MPC8544DS board only supports up to 3GB of RAM");
+        exit(1);
+    }
+
+    ppce500_init(machine, &params);
 }
 
 
@@ -56,7 +55,6 @@ static QEMUMachine ppce500_machine = {
     .desc = "mpc8544ds",
     .init = mpc8544ds_init,
     .max_cpus = 15,
-    DEFAULT_MACHINE_OPTIONS,
 };
 
 static void ppce500_machine_init(void)

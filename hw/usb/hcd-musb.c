@@ -383,7 +383,7 @@ struct MUSBState *musb_init(DeviceState *parent_device, int gpio_base)
 
     musb_reset(s);
 
-    usb_bus_new(&s->bus, &musb_bus_ops, parent_device);
+    usb_bus_new(&s->bus, sizeof(s->bus), &musb_bus_ops, parent_device);
     usb_register_port(&s->bus, &s->port, s, 0, &musb_port_ops,
                       USB_SPEED_MASK_LOW | USB_SPEED_MASK_FULL);
 
@@ -554,13 +554,15 @@ static void musb_schedule_cb(USBPort *port, USBPacket *packey)
         timeout = ep->timeout[dir];
     else if (ep->interrupt[dir])
         timeout = 8;
-    else
-        return musb_cb_tick(ep);
+    else {
+        musb_cb_tick(ep);
+        return;
+    }
 
     if (!ep->intv_timer[dir])
-        ep->intv_timer[dir] = qemu_new_timer_ns(vm_clock, musb_cb_tick, ep);
+        ep->intv_timer[dir] = timer_new_ns(QEMU_CLOCK_VIRTUAL, musb_cb_tick, ep);
 
-    qemu_mod_timer(ep->intv_timer[dir], qemu_get_clock_ns(vm_clock) +
+    timer_mod(ep->intv_timer[dir], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                    muldiv64(timeout, get_ticks_per_sec(), 8000));
 }
 
@@ -608,6 +610,7 @@ static void musb_packet(MUSBState *s, MUSBEndPoint *ep,
     USBDevice *dev;
     USBEndpoint *uep;
     int idx = epnum && dir;
+    int id;
     int ttype;
 
     /* ep->type[0,1] contains:
@@ -625,8 +628,11 @@ static void musb_packet(MUSBState *s, MUSBEndPoint *ep,
     /* A wild guess on the FADDR semantics... */
     dev = usb_find_device(&s->port, ep->faddr[idx]);
     uep = usb_ep_get(dev, pid, ep->type[idx] & 0xf);
-    usb_packet_setup(&ep->packey[dir].p, pid, uep, 0,
-                     (dev->addr << 16) | (uep->nr << 8) | pid, false, true);
+    id = pid;
+    if (uep) {
+        id |= (dev->addr << 16) | (uep->nr << 8);
+    }
+    usb_packet_setup(&ep->packey[dir].p, pid, uep, 0, id, false, true);
     usb_packet_addbuf(&ep->packey[dir].p, ep->buf[idx], len);
     ep->packey[dir].ep = ep;
     ep->packey[dir].dir = dir;
@@ -768,9 +774,11 @@ static void musb_rx_packet_complete(USBPacket *packey, void *opaque)
 
         /* NAK timeouts are only generated in Bulk transfers and
          * Data-errors in Isochronous.  */
-        if (ep->interrupt[1])
-            return musb_packet(s, ep, epnum, USB_TOKEN_IN,
-                            packey->iov.size, musb_rx_packet_complete, 1);
+        if (ep->interrupt[1]) {
+            musb_packet(s, ep, epnum, USB_TOKEN_IN,
+                        packey->iov.size, musb_rx_packet_complete, 1);
+            return;
+        }
 
         ep->csr[1] |= MGC_M_RXCSR_DATAERROR;
         if (!epnum)
@@ -860,8 +868,7 @@ static void musb_tx_rdy(MUSBState *s, int epnum)
          * but it doesn't make sense for us to do that.  */
     }
 
-    return musb_packet(s, ep, epnum, pid,
-                    total, musb_tx_packet_complete, 0);
+    musb_packet(s, ep, epnum, pid, total, musb_tx_packet_complete, 0);
 }
 
 static void musb_rx_req(MUSBState *s, int epnum)
@@ -925,8 +932,7 @@ static void musb_rx_req(MUSBState *s, int epnum)
     }
 #endif
 
-    return musb_packet(s, ep, epnum, USB_TOKEN_IN,
-                    total, musb_rx_packet_complete, 1);
+    musb_packet(s, ep, epnum, USB_TOKEN_IN, total, musb_rx_packet_complete, 1);
 }
 
 static uint8_t musb_read_fifo(MUSBEndPoint *ep)
@@ -962,7 +968,7 @@ static void musb_write_fifo(MUSBEndPoint *ep, uint8_t value)
 static void musb_ep_frame_cancel(MUSBEndPoint *ep, int dir)
 {
     if (ep->intv_timer[dir])
-        qemu_del_timer(ep->intv_timer[dir]);
+        timer_del(ep->intv_timer[dir]);
 }
 
 /* Bus control */

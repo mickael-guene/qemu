@@ -5,17 +5,23 @@
 //
 // This file may be distributed under the terms of the GNU LGPLv3 license.
 
-#include "bregs.h" // struct bregs
 #include "biosvar.h" // GET_BDA
-#include "util.h" // debug_enter
-#include "pic.h" // enable_hwirq
+#include "bregs.h" // struct bregs
+#include "hw/pic.h" // enable_hwirq
+#include "output.h" // debug_enter
+#include "stacks.h" // call16_int
+#include "string.h" // memset
 
-// Amount of continuous ram under 4Gig
-u32 RamSize VAR16VISIBLE;
-// Amount of continuous ram >4Gig
-u64 RamSizeOver4G;
-// Space for bios tables built an run-time.
-char BiosTableSpace[CONFIG_MAX_BIOSTABLE] __aligned(MALLOC_MIN_ALIGN) VAR16VISIBLE;
+#define PORT_MATH_CLEAR        0x00f0
+
+// Indicator if POST phase has been started (and if it has completed).
+int HaveRunPost VARFSEG;
+
+int
+in_post(void)
+{
+    return GET_GLOBAL(HaveRunPost) == 1;
+}
 
 
 /****************************************************************
@@ -78,7 +84,7 @@ handle_75(void)
     // clear irq13
     outb(0, PORT_MATH_CLEAR);
     // clear interrupt
-    eoi_pic2();
+    pic_eoi2();
     // legacy nmi call
     struct bregs br;
     memset(&br, 0, sizeof(br));
@@ -111,11 +117,11 @@ handle_75(void)
 // INT 16/AH=09h (keyboard functionality) supported
 #define CBT_F2_INT1609  (1<<6)
 
-struct bios_config_table_s BIOS_CONFIG_TABLE VAR16FIXED(0xe6f5) = {
+struct bios_config_table_s BIOS_CONFIG_TABLE VARFSEGFIXED(0xe6f5) = {
     .size     = sizeof(BIOS_CONFIG_TABLE) - 2,
-    .model    = CONFIG_MODEL_ID,
-    .submodel = CONFIG_SUBMODEL_ID,
-    .biosrev  = CONFIG_BIOS_REVISION,
+    .model    = BUILD_MODEL_ID,
+    .submodel = BUILD_SUBMODEL_ID,
+    .biosrev  = BUILD_BIOS_REVISION,
     .feature1 = (
         CBT_F1_2NDPIC | CBT_F1_RTC | CBT_F1_EBDA
         | (CONFIG_KBD_CALL_INT15_4F ? CBT_F1_INT154F : 0)),
@@ -131,23 +137,23 @@ struct bios_config_table_s BIOS_CONFIG_TABLE VAR16FIXED(0xe6f5) = {
  ****************************************************************/
 
 // Real mode IDT descriptor
-struct descloc_s rmode_IDT_info VAR16VISIBLE = {
+struct descloc_s rmode_IDT_info VARFSEG = {
     .length = sizeof(struct rmode_IVT) - 1,
     .addr = (u32)MAKE_FLATPTR(SEG_IVT, 0),
 };
 
 // Dummy IDT that forces a machine shutdown if an irq happens in
 // protected mode.
-u8 dummy_IDT VAR16VISIBLE;
+u8 dummy_IDT VARFSEG;
 
 // Protected mode IDT descriptor
-struct descloc_s pmode_IDT_info VAR16VISIBLE = {
+struct descloc_s pmode_IDT_info VARFSEG = {
     .length = sizeof(dummy_IDT) - 1,
-    .addr = (u32)MAKE_FLATPTR(SEG_BIOS, &dummy_IDT),
+    .addr = (u32)&dummy_IDT,
 };
 
 // GDT
-u64 rombios32_gdt[] VAR16VISIBLE __aligned(8) = {
+u64 rombios32_gdt[] VARFSEG __aligned(8) = {
     // First entry can't be used.
     0x0000000000000000LL,
     // 32 bit flat code segment (SEG32_MODE32_CS)
@@ -165,9 +171,9 @@ u64 rombios32_gdt[] VAR16VISIBLE __aligned(8) = {
 };
 
 // GDT descriptor
-struct descloc_s rombios32_gdt_48 VAR16VISIBLE = {
+struct descloc_s rombios32_gdt_48 VARFSEG = {
     .length = sizeof(rombios32_gdt) - 1,
-    .addr = (u32)MAKE_FLATPTR(SEG_BIOS, rombios32_gdt),
+    .addr = (u32)rombios32_gdt,
 };
 
 
@@ -175,18 +181,23 @@ struct descloc_s rombios32_gdt_48 VAR16VISIBLE = {
  * Misc fixed vars
  ****************************************************************/
 
-char BiosCopyright[] VAR16FIXED(0xff00) =
-    "(c) 2002 MandrakeSoft S.A. Written by Kevin Lawton & the Bochs team.";
-
 // BIOS build date
-char BiosDate[] VAR16FIXED(0xfff5) = "06/23/99";
+char BiosDate[] VARFSEGFIXED(0xfff5) = "06/23/99";
 
-u8 BiosModelId VAR16FIXED(0xfffe) = CONFIG_MODEL_ID;
+u8 BiosModelId VARFSEGFIXED(0xfffe) = BUILD_MODEL_ID;
 
-u8 BiosChecksum VAR16FIXED(0xffff);
+u8 BiosChecksum VARFSEGFIXED(0xffff);
+
+struct floppy_dbt_s diskette_param_table VARFSEGFIXED(0xefc7);
+
+// Old Fixed Disk Parameter Table (newer tables are in the ebda).
+struct fdpt_s OldFDPT VARFSEGFIXED(0xe401);
+
+// XXX - Baud Rate Generator Table
+u8 BaudTable[16] VARFSEGFIXED(0xe729);
 
 // XXX - Initial Interrupt Vector Offsets Loaded by POST
-u8 InitVectors[13] VAR16FIXED(0xfef3);
+u8 InitVectors[13] VARFSEGFIXED(0xfef3);
 
 // XXX - INT 1D - SYSTEM DATA - VIDEO PARAMETER TABLES
-u8 VideoParams[88] VAR16FIXED(0xf0a4);
+u8 VideoParams[88] VARFSEGFIXED(0xf0a4);

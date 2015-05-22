@@ -52,7 +52,7 @@ typedef struct VIOsPAPRDeviceClass {
     const char *dt_name, *dt_type, *dt_compatible;
     target_ulong signal_mask;
     uint32_t rtce_window_size;
-    int (*init)(VIOsPAPRDevice *dev);
+    void (*realize)(VIOsPAPRDevice *dev, Error **errp);
     void (*reset)(VIOsPAPRDevice *dev);
     int (*devnode)(VIOsPAPRDevice *dev, void *fdt, int node_off);
 } VIOsPAPRDeviceClass;
@@ -63,7 +63,10 @@ struct VIOsPAPRDevice {
     uint32_t irq;
     target_ulong signal_state;
     VIOsPAPR_CRQ crq;
-    DMAContext *dma;
+    AddressSpace as;
+    MemoryRegion mrroot;
+    MemoryRegion mrbypass;
+    sPAPRTCETable *tcet;
 };
 
 #define DEFINE_SPAPR_PROPERTIES(type, field)           \
@@ -91,35 +94,35 @@ static inline qemu_irq spapr_vio_qirq(VIOsPAPRDevice *dev)
 static inline bool spapr_vio_dma_valid(VIOsPAPRDevice *dev, uint64_t taddr,
                                        uint32_t size, DMADirection dir)
 {
-    return dma_memory_valid(dev->dma, taddr, size, dir);
+    return dma_memory_valid(&dev->as, taddr, size, dir);
 }
 
 static inline int spapr_vio_dma_read(VIOsPAPRDevice *dev, uint64_t taddr,
                                      void *buf, uint32_t size)
 {
-    return (dma_memory_read(dev->dma, taddr, buf, size) != 0) ?
+    return (dma_memory_read(&dev->as, taddr, buf, size) != 0) ?
         H_DEST_PARM : H_SUCCESS;
 }
 
 static inline int spapr_vio_dma_write(VIOsPAPRDevice *dev, uint64_t taddr,
                                       const void *buf, uint32_t size)
 {
-    return (dma_memory_write(dev->dma, taddr, buf, size) != 0) ?
+    return (dma_memory_write(&dev->as, taddr, buf, size) != 0) ?
         H_DEST_PARM : H_SUCCESS;
 }
 
 static inline int spapr_vio_dma_set(VIOsPAPRDevice *dev, uint64_t taddr,
                                     uint8_t c, uint32_t size)
 {
-    return (dma_memory_set(dev->dma, taddr, c, size) != 0) ?
+    return (dma_memory_set(&dev->as, taddr, c, size) != 0) ?
         H_DEST_PARM : H_SUCCESS;
 }
 
-#define vio_stb(_dev, _addr, _val) (stb_dma((_dev)->dma, (_addr), (_val)))
-#define vio_sth(_dev, _addr, _val) (stw_be_dma((_dev)->dma, (_addr), (_val)))
-#define vio_stl(_dev, _addr, _val) (stl_be_dma((_dev)->dma, (_addr), (_val)))
-#define vio_stq(_dev, _addr, _val) (stq_be_dma((_dev)->dma, (_addr), (_val)))
-#define vio_ldq(_dev, _addr) (ldq_be_dma((_dev)->dma, (_addr)))
+#define vio_stb(_dev, _addr, _val) (stb_dma(&(_dev)->as, (_addr), (_val)))
+#define vio_sth(_dev, _addr, _val) (stw_be_dma(&(_dev)->as, (_addr), (_val)))
+#define vio_stl(_dev, _addr, _val) (stl_be_dma(&(_dev)->as, (_addr), (_val)))
+#define vio_stq(_dev, _addr, _val) (stq_be_dma(&(_dev)->as, (_addr), (_val)))
+#define vio_ldq(_dev, _addr) (ldq_be_dma(&(_dev)->as, (_addr)))
 
 int spapr_vio_send_crq(VIOsPAPRDevice *dev, uint8_t *crq);
 
@@ -132,5 +135,12 @@ void spapr_vscsi_create(VIOsPAPRBus *bus);
 VIOsPAPRDevice *spapr_vty_get_default(VIOsPAPRBus *bus);
 
 void spapr_vio_quiesce(void);
+
+extern const VMStateDescription vmstate_spapr_vio;
+
+#define VMSTATE_SPAPR_VIO(_f, _s) \
+    VMSTATE_STRUCT(_f, _s, 0, vmstate_spapr_vio, VIOsPAPRDevice)
+
+void spapr_vio_set_bypass(VIOsPAPRDevice *dev, bool bypass);
 
 #endif /* _HW_SPAPR_VIO_H */

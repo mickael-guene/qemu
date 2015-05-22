@@ -25,6 +25,7 @@
 
 #include "hw/isa/pc87312.h"
 #include "qemu/error-report.h"
+#include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/char.h"
@@ -84,11 +85,6 @@ static inline uint32_t get_parallel_irq(PC87312State *s)
     } else {
         return parallel_irq[idx];
     }
-}
-
-static inline bool is_parallel_epp(PC87312State *s)
-{
-    return s->regs[REG_PTR] & PTR_EPP_MODE;
 }
 
 
@@ -264,7 +260,7 @@ static void pc87312_reset(DeviceState *d)
     pc87312_soft_reset(s);
 }
 
-static int pc87312_init(ISADevice *dev)
+static void pc87312_realize(DeviceState *dev, Error **errp)
 {
     PC87312State *s;
     DeviceState *d;
@@ -276,11 +272,13 @@ static int pc87312_init(ISADevice *dev)
     int i;
 
     s = PC87312(dev);
-    bus = isa_bus_from_device(dev);
+    isa = ISA_DEVICE(dev);
+    bus = isa_bus_from_device(isa);
+    isa_register_ioport(isa, &s->io, s->iobase);
     pc87312_hard_reset(s);
-    isa_register_ioport(dev, &s->io, s->iobase);
 
     if (is_parallel_enabled(s)) {
+        /* FIXME use a qdev chardev prop instead of parallel_hds[] */
         chr = parallel_hds[0];
         if (chr == NULL) {
             chr = qemu_chr_new("par0", "null", NULL);
@@ -299,6 +297,7 @@ static int pc87312_init(ISADevice *dev)
 
     for (i = 0; i < 2; i++) {
         if (is_uart_enabled(s, i)) {
+            /* FIXME use a qdev chardev prop instead of serial_hds[] */
             chr = serial_hds[i];
             if (chr == NULL) {
                 snprintf(name, sizeof(name), "ser%d", i);
@@ -322,13 +321,17 @@ static int pc87312_init(ISADevice *dev)
         d = DEVICE(isa);
         qdev_prop_set_uint32(d, "iobase", get_fdc_iobase(s));
         qdev_prop_set_uint32(d, "irq", 6);
+        /* FIXME use a qdev drive property instead of drive_get() */
         drive = drive_get(IF_FLOPPY, 0, 0);
         if (drive != NULL) {
-            qdev_prop_set_drive_nofail(d, "driveA", drive->bdrv);
+            qdev_prop_set_drive_nofail(d, "driveA",
+                                       blk_by_legacy_dinfo(drive));
         }
+        /* FIXME use a qdev drive property instead of drive_get() */
         drive = drive_get(IF_FLOPPY, 0, 1);
         if (drive != NULL) {
-            qdev_prop_set_drive_nofail(d, "driveB", drive->bdrv);
+            qdev_prop_set_drive_nofail(d, "driveB",
+                                       blk_by_legacy_dinfo(drive));
         }
         qdev_init_nofail(d);
         s->fdc.dev = isa;
@@ -345,15 +348,13 @@ static int pc87312_init(ISADevice *dev)
         s->ide.dev = isa;
         trace_pc87312_info_ide(get_ide_iobase(s));
     }
-
-    return 0;
 }
 
 static void pc87312_initfn(Object *obj)
 {
     PC87312State *s = PC87312(obj);
 
-    memory_region_init_io(&s->io, &pc87312_io_ops, s, "pc87312", 2);
+    memory_region_init_io(&s->io, obj, &pc87312_io_ops, s, "pc87312", 2);
 }
 
 static const VMStateDescription vmstate_pc87312 = {
@@ -370,7 +371,7 @@ static const VMStateDescription vmstate_pc87312 = {
 };
 
 static Property pc87312_properties[] = {
-    DEFINE_PROP_HEX32("iobase", PC87312State, iobase, 0x398),
+    DEFINE_PROP_UINT32("iobase", PC87312State, iobase, 0x398),
     DEFINE_PROP_UINT8("config", PC87312State, config, 1),
     DEFINE_PROP_END_OF_LIST()
 };
@@ -378,9 +379,8 @@ static Property pc87312_properties[] = {
 static void pc87312_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    ISADeviceClass *ic = ISA_DEVICE_CLASS(klass);
 
-    ic->init = pc87312_init;
+    dc->realize = pc87312_realize;
     dc->reset = pc87312_reset;
     dc->vmsd = &vmstate_pc87312;
     dc->props = pc87312_properties;

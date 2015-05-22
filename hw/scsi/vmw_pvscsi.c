@@ -42,10 +42,12 @@
 #define PVSCSI_MAX_CMD_DATA_WORDS \
     (sizeof(PVSCSICmdDescSetupRings)/sizeof(uint32_t))
 
-#define RS_GET_FIELD(rs_pa, field) \
-    (ldl_le_phys(rs_pa + offsetof(struct PVSCSIRingsState, field)))
-#define RS_SET_FIELD(rs_pa, field, val) \
-    (stl_le_phys(rs_pa + offsetof(struct PVSCSIRingsState, field), val))
+#define RS_GET_FIELD(m, field) \
+    (ldl_le_pci_dma(&container_of(m, PVSCSIState, rings)->parent_obj, \
+                 (m)->rs_pa + offsetof(struct PVSCSIRingsState, field)))
+#define RS_SET_FIELD(m, field, val) \
+    (stl_le_pci_dma(&container_of(m, PVSCSIState, rings)->parent_obj, \
+                 (m)->rs_pa + offsetof(struct PVSCSIRingsState, field), val))
 
 #define TYPE_PVSCSI "pvscsi"
 #define PVSCSI(obj) OBJECT_CHECK(PVSCSIState, (obj), TYPE_PVSCSI)
@@ -151,13 +153,13 @@ pvscsi_ring_init_data(PVSCSIRingInfo *m, PVSCSICmdDescSetupRings *ri)
         m->cmp_ring_pages_pa[i] = ri->cmpRingPPNs[i] << VMW_PAGE_SHIFT;
     }
 
-    RS_SET_FIELD(m->rs_pa, reqProdIdx, 0);
-    RS_SET_FIELD(m->rs_pa, reqConsIdx, 0);
-    RS_SET_FIELD(m->rs_pa, reqNumEntriesLog2, txr_len_log2);
+    RS_SET_FIELD(m, reqProdIdx, 0);
+    RS_SET_FIELD(m, reqConsIdx, 0);
+    RS_SET_FIELD(m, reqNumEntriesLog2, txr_len_log2);
 
-    RS_SET_FIELD(m->rs_pa, cmpProdIdx, 0);
-    RS_SET_FIELD(m->rs_pa, cmpConsIdx, 0);
-    RS_SET_FIELD(m->rs_pa, cmpNumEntriesLog2, rxr_len_log2);
+    RS_SET_FIELD(m, cmpProdIdx, 0);
+    RS_SET_FIELD(m, cmpConsIdx, 0);
+    RS_SET_FIELD(m, cmpNumEntriesLog2, rxr_len_log2);
 
     trace_pvscsi_ring_init_data(txr_len_log2, rxr_len_log2);
 
@@ -183,9 +185,9 @@ pvscsi_ring_init_msg(PVSCSIRingInfo *m, PVSCSICmdDescSetupMsgRing *ri)
         m->msg_ring_pages_pa[i] = ri->ringPPNs[i] << VMW_PAGE_SHIFT;
     }
 
-    RS_SET_FIELD(m->rs_pa, msgProdIdx, 0);
-    RS_SET_FIELD(m->rs_pa, msgConsIdx, 0);
-    RS_SET_FIELD(m->rs_pa, msgNumEntriesLog2, len_log2);
+    RS_SET_FIELD(m, msgProdIdx, 0);
+    RS_SET_FIELD(m, msgConsIdx, 0);
+    RS_SET_FIELD(m, msgNumEntriesLog2, len_log2);
 
     trace_pvscsi_ring_init_msg(len_log2);
 
@@ -211,7 +213,7 @@ pvscsi_ring_cleanup(PVSCSIRingInfo *mgr)
 static hwaddr
 pvscsi_ring_pop_req_descr(PVSCSIRingInfo *mgr)
 {
-    uint32_t ready_ptr = RS_GET_FIELD(mgr->rs_pa, reqProdIdx);
+    uint32_t ready_ptr = RS_GET_FIELD(mgr, reqProdIdx);
 
     if (ready_ptr != mgr->consumed_ptr) {
         uint32_t next_ready_ptr =
@@ -231,7 +233,7 @@ pvscsi_ring_pop_req_descr(PVSCSIRingInfo *mgr)
 static void
 pvscsi_ring_flush_req(PVSCSIRingInfo *mgr)
 {
-    RS_SET_FIELD(mgr->rs_pa, reqConsIdx, mgr->consumed_ptr);
+    RS_SET_FIELD(mgr, reqConsIdx, mgr->consumed_ptr);
 }
 
 static hwaddr
@@ -276,14 +278,14 @@ pvscsi_ring_flush_cmp(PVSCSIRingInfo *mgr)
 
     trace_pvscsi_ring_flush_cmp(mgr->filled_cmp_ptr);
 
-    RS_SET_FIELD(mgr->rs_pa, cmpProdIdx, mgr->filled_cmp_ptr);
+    RS_SET_FIELD(mgr, cmpProdIdx, mgr->filled_cmp_ptr);
 }
 
 static bool
 pvscsi_ring_msg_has_room(PVSCSIRingInfo *mgr)
 {
-    uint32_t prodIdx = RS_GET_FIELD(mgr->rs_pa, msgProdIdx);
-    uint32_t consIdx = RS_GET_FIELD(mgr->rs_pa, msgConsIdx);
+    uint32_t prodIdx = RS_GET_FIELD(mgr, msgProdIdx);
+    uint32_t consIdx = RS_GET_FIELD(mgr, msgConsIdx);
 
     return (prodIdx - consIdx) < (mgr->msg_len_mask + 1);
 }
@@ -296,7 +298,7 @@ pvscsi_ring_flush_msg(PVSCSIRingInfo *mgr)
 
     trace_pvscsi_ring_flush_msg(mgr->filled_msg_ptr);
 
-    RS_SET_FIELD(mgr->rs_pa, msgProdIdx, mgr->filled_msg_ptr);
+    RS_SET_FIELD(mgr, msgProdIdx, mgr->filled_msg_ptr);
 }
 
 static void
@@ -330,7 +332,7 @@ pvscsi_update_irq_status(PVSCSIState *s)
         return;
     }
 
-    qemu_set_irq(d->irq[0], !!should_raise);
+    pci_set_irq(d, !!should_raise);
 }
 
 static void
@@ -389,7 +391,7 @@ pvscsi_process_completion_queue(void *opaque)
         QTAILQ_REMOVE(&s->completion_queue, pvscsi_req, next);
         pvscsi_cmp_ring_put(s, &pvscsi_req->cmp);
         g_free(pvscsi_req);
-        has_completed++;
+        has_completed = true;
     }
 
     if (has_completed) {
@@ -477,12 +479,13 @@ static void
 pvscsi_command_complete(SCSIRequest *req, uint32_t status, size_t resid)
 {
     PVSCSIRequest *pvscsi_req = req->hba_private;
-    PVSCSIState *s = pvscsi_req->dev;
+    PVSCSIState *s;
 
     if (!pvscsi_req) {
         trace_pvscsi_command_complete_not_found(req->tag);
         return;
     }
+    s = pvscsi_req->dev;
 
     if (resid) {
         /* Short transfer.  */
@@ -521,17 +524,20 @@ pvscsi_send_msg(PVSCSIState *s, SCSIDevice *dev, uint32_t msg_type)
 }
 
 static void
-pvscsi_hotplug(SCSIBus *bus, SCSIDevice *dev)
+pvscsi_hotplug(HotplugHandler *hotplug_dev, DeviceState *dev, Error **errp)
 {
-    PVSCSIState *s = container_of(bus, PVSCSIState, bus);
-    pvscsi_send_msg(s, dev, PVSCSI_MSG_DEV_ADDED);
+    PVSCSIState *s = PVSCSI(hotplug_dev);
+
+    pvscsi_send_msg(s, SCSI_DEVICE(dev), PVSCSI_MSG_DEV_ADDED);
 }
 
 static void
-pvscsi_hot_unplug(SCSIBus *bus, SCSIDevice *dev)
+pvscsi_hot_unplug(HotplugHandler *hotplug_dev, DeviceState *dev, Error **errp)
 {
-    PVSCSIState *s = container_of(bus, PVSCSIState, bus);
-    pvscsi_send_msg(s, dev, PVSCSI_MSG_DEV_REMOVED);
+    PVSCSIState *s = PVSCSI(hotplug_dev);
+
+    pvscsi_send_msg(s, SCSI_DEVICE(dev), PVSCSI_MSG_DEV_REMOVED);
+    qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
 }
 
 static void
@@ -617,7 +623,7 @@ pvscsi_build_sglist(PVSCSIState *s, PVSCSIRequest *r)
 {
     PCIDevice *d = PCI_DEVICE(s);
 
-    qemu_sglist_init(&r->sgl, 1, pci_dma_context(d));
+    pci_dma_sglist_init(&r->sgl, d, 1);
     if (r->req.flags & PVSCSI_FLAG_CMD_WITH_SG_LIST) {
         pvscsi_convert_sglist(r);
     } else {
@@ -1054,8 +1060,6 @@ static const struct SCSIBusInfo pvscsi_scsi_info = {
         .get_sg_list = pvscsi_get_sg_list,
         .complete = pvscsi_command_complete,
         .cancel = pvscsi_request_cancelled,
-        .hotplug = pvscsi_hotplug,
-        .hot_unplug = pvscsi_hot_unplug,
 };
 
 static int
@@ -1075,7 +1079,7 @@ pvscsi_init(PCIDevice *pci_dev)
     /* Interrupt pin A */
     pci_config_set_interrupt_pin(pci_dev->config, 1);
 
-    memory_region_init_io(&s->io_space, &pvscsi_ops, s,
+    memory_region_init_io(&s->io_space, OBJECT(s), &pvscsi_ops, s,
                           "pvscsi-io", PVSCSI_MEM_SPACE_SIZE);
     pci_register_bar(pci_dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->io_space);
 
@@ -1084,11 +1088,13 @@ pvscsi_init(PCIDevice *pci_dev)
     s->completion_worker = qemu_bh_new(pvscsi_process_completion_queue, s);
     if (!s->completion_worker) {
         pvscsi_cleanup_msi(s);
-        memory_region_destroy(&s->io_space);
         return -ENOMEM;
     }
 
-    scsi_bus_new(&s->bus, &pci_dev->qdev, &pvscsi_scsi_info, NULL);
+    scsi_bus_new(&s->bus, sizeof(s->bus), DEVICE(pci_dev),
+                 &pvscsi_scsi_info, NULL);
+    /* override default SCSI bus hotplug-handler, with pvscsi's one */
+    qbus_set_hotplug_handler(BUS(&s->bus), DEVICE(s), &error_abort);
     pvscsi_reset_state(s);
 
     return 0;
@@ -1103,8 +1109,6 @@ pvscsi_uninit(PCIDevice *pci_dev)
     qemu_bh_delete(s->completion_worker);
 
     pvscsi_cleanup_msi(s);
-
-    memory_region_destroy(&s->io_space);
 }
 
 static void
@@ -1136,13 +1140,12 @@ pvscsi_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_pvscsi = {
-    .name = TYPE_PVSCSI,
+    .name = "pvscsi",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
     .pre_save = pvscsi_pre_save,
     .post_load = pvscsi_post_load,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, PVSCSIState),
         VMSTATE_UINT8(msi_used, PVSCSIState),
         VMSTATE_UINT32(resetting, PVSCSIState),
@@ -1187,6 +1190,7 @@ static void pvscsi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(klass);
 
     k->init = pvscsi_init;
     k->exit = pvscsi_uninit;
@@ -1197,14 +1201,21 @@ static void pvscsi_class_init(ObjectClass *klass, void *data)
     dc->reset = pvscsi_reset;
     dc->vmsd = &vmstate_pvscsi;
     dc->props = pvscsi_properties;
+    set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     k->config_write = pvscsi_write_config;
+    hc->unplug = pvscsi_hot_unplug;
+    hc->plug = pvscsi_hotplug;
 }
 
 static const TypeInfo pvscsi_info = {
-    .name          = "pvscsi",
+    .name          = TYPE_PVSCSI,
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PVSCSIState),
     .class_init    = pvscsi_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_HOTPLUG_HANDLER },
+        { }
+    }
 };
 
 static void

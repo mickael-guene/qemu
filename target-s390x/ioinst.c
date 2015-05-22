@@ -1,7 +1,7 @@
 /*
  * I/O instructions for S/390
  *
- * Copyright 2012 IBM Corp.
+ * Copyright 2012, 2015 IBM Corp.
  * Author(s): Cornelia Huck <cornelia.huck@de.ibm.com>
  *
  * This work is licensed under the terms of the GNU GPL, version 2 or (at
@@ -14,6 +14,7 @@
 #include "cpu.h"
 #include "ioinst.h"
 #include "trace.h"
+#include "hw/s390x/s390-pci-bus.h"
 
 int ioinst_disassemble_sch_ident(uint32_t value, int *m, int *cssid, int *ssid,
                                  int *schid)
@@ -36,7 +37,7 @@ int ioinst_disassemble_sch_ident(uint32_t value, int *m, int *cssid, int *ssid,
     return 0;
 }
 
-int ioinst_handle_xsch(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_xsch(S390CPU *cpu, uint64_t reg1)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
@@ -44,8 +45,8 @@ int ioinst_handle_xsch(CPUS390XState *env, uint64_t reg1)
     int cc;
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        program_interrupt(&cpu->env, PGM_OPERAND, 2);
+        return;
     }
     trace_ioinst_sch_id("xsch", cssid, ssid, schid);
     sch = css_find_subch(m, cssid, ssid, schid);
@@ -66,11 +67,10 @@ int ioinst_handle_xsch(CPUS390XState *env, uint64_t reg1)
         cc = 1;
         break;
     }
-
-    return cc;
+    setcc(cpu, cc);
 }
 
-int ioinst_handle_csch(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_csch(S390CPU *cpu, uint64_t reg1)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
@@ -78,8 +78,8 @@ int ioinst_handle_csch(CPUS390XState *env, uint64_t reg1)
     int cc;
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        program_interrupt(&cpu->env, PGM_OPERAND, 2);
+        return;
     }
     trace_ioinst_sch_id("csch", cssid, ssid, schid);
     sch = css_find_subch(m, cssid, ssid, schid);
@@ -91,10 +91,10 @@ int ioinst_handle_csch(CPUS390XState *env, uint64_t reg1)
     } else {
         cc = 0;
     }
-    return cc;
+    setcc(cpu, cc);
 }
 
-int ioinst_handle_hsch(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_hsch(S390CPU *cpu, uint64_t reg1)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
@@ -102,8 +102,8 @@ int ioinst_handle_hsch(CPUS390XState *env, uint64_t reg1)
     int cc;
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        program_interrupt(&cpu->env, PGM_OPERAND, 2);
+        return;
     }
     trace_ioinst_sch_id("hsch", cssid, ssid, schid);
     sch = css_find_subch(m, cssid, ssid, schid);
@@ -124,8 +124,7 @@ int ioinst_handle_hsch(CPUS390XState *env, uint64_t reg1)
         cc = 1;
         break;
     }
-
-    return cc;
+    setcc(cpu, cc);
 }
 
 static int ioinst_schib_valid(SCHIB *schib)
@@ -141,36 +140,33 @@ static int ioinst_schib_valid(SCHIB *schib)
     return 1;
 }
 
-int ioinst_handle_msch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
+void ioinst_handle_msch(S390CPU *cpu, uint64_t reg1, uint32_t ipb)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
-    SCHIB *schib;
+    SCHIB schib;
     uint64_t addr;
     int ret = -ENODEV;
     int cc;
-    hwaddr len = sizeof(*schib);
+    CPUS390XState *env = &cpu->env;
 
-    if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
+    addr = decode_basedisp_s(env, ipb);
+    if (addr & 3) {
+        program_interrupt(env, PGM_SPECIFICATION, 2);
+        return;
+    }
+    if (s390_cpu_virt_mem_read(cpu, addr, &schib, sizeof(schib))) {
+        return;
+    }
+    if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid) ||
+        !ioinst_schib_valid(&schib)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
     trace_ioinst_sch_id("msch", cssid, ssid, schid);
-    addr = decode_basedisp_s(env, ipb);
-    schib = s390_cpu_physical_memory_map(env, addr, &len, 0);
-    if (!schib || len != sizeof(*schib)) {
-        program_interrupt(env, PGM_SPECIFICATION, 2);
-        cc = -EIO;
-        goto out;
-    }
-    if (!ioinst_schib_valid(schib)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        cc = -EIO;
-        goto out;
-    }
     sch = css_find_subch(m, cssid, ssid, schid);
     if (sch && css_subch_visible(sch)) {
-        ret = css_do_msch(sch, schib);
+        ret = css_do_msch(sch, &schib);
     }
     switch (ret) {
     case -ENODEV:
@@ -186,9 +182,7 @@ int ioinst_handle_msch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
         cc = 1;
         break;
     }
-out:
-    s390_cpu_physical_memory_unmap(env, schib, len, 0);
-    return cc;
+    setcc(cpu, cc);
 }
 
 static void copy_orb_from_guest(ORB *dest, const ORB *src)
@@ -212,34 +206,31 @@ static int ioinst_orb_valid(ORB *orb)
     return 1;
 }
 
-int ioinst_handle_ssch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
+void ioinst_handle_ssch(S390CPU *cpu, uint64_t reg1, uint32_t ipb)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
-    ORB *orig_orb, orb;
+    ORB orig_orb, orb;
     uint64_t addr;
     int ret = -ENODEV;
     int cc;
-    hwaddr len = sizeof(*orig_orb);
+    CPUS390XState *env = &cpu->env;
 
-    if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
+    addr = decode_basedisp_s(env, ipb);
+    if (addr & 3) {
+        program_interrupt(env, PGM_SPECIFICATION, 2);
+        return;
+    }
+    if (s390_cpu_virt_mem_read(cpu, addr, &orig_orb, sizeof(orb))) {
+        return;
+    }
+    copy_orb_from_guest(&orb, &orig_orb);
+    if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid) ||
+        !ioinst_orb_valid(&orb)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
     trace_ioinst_sch_id("ssch", cssid, ssid, schid);
-    addr = decode_basedisp_s(env, ipb);
-    orig_orb = s390_cpu_physical_memory_map(env, addr, &len, 0);
-    if (!orig_orb || len != sizeof(*orig_orb)) {
-        program_interrupt(env, PGM_SPECIFICATION, 2);
-        cc = -EIO;
-        goto out;
-    }
-    copy_orb_from_guest(&orb, orig_orb);
-    if (!ioinst_orb_valid(&orb)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        cc = -EIO;
-        goto out;
-    }
     sch = css_find_subch(m, cssid, ssid, schid);
     if (sch && css_subch_visible(sch)) {
         ret = css_do_ssch(sch, &orb);
@@ -258,58 +249,64 @@ int ioinst_handle_ssch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
         cc = 1;
         break;
     }
-
-out:
-    s390_cpu_physical_memory_unmap(env, orig_orb, len, 0);
-    return cc;
+    setcc(cpu, cc);
 }
 
-int ioinst_handle_stcrw(CPUS390XState *env, uint32_t ipb)
+void ioinst_handle_stcrw(S390CPU *cpu, uint32_t ipb)
 {
-    CRW *crw;
+    CRW crw;
     uint64_t addr;
     int cc;
-    hwaddr len = sizeof(*crw);
+    CPUS390XState *env = &cpu->env;
 
     addr = decode_basedisp_s(env, ipb);
-    crw = s390_cpu_physical_memory_map(env, addr, &len, 1);
-    if (!crw || len != sizeof(*crw)) {
+    if (addr & 3) {
         program_interrupt(env, PGM_SPECIFICATION, 2);
-        cc = -EIO;
-        goto out;
+        return;
     }
-    cc = css_do_stcrw(crw);
+
+    cc = css_do_stcrw(&crw);
     /* 0 - crw stored, 1 - zeroes stored */
-out:
-    s390_cpu_physical_memory_unmap(env, crw, len, 1);
-    return cc;
+
+    if (s390_cpu_virt_mem_write(cpu, addr, &crw, sizeof(crw)) == 0) {
+        setcc(cpu, cc);
+    } else if (cc == 0) {
+        /* Write failed: requeue CRW since STCRW is a suppressing instruction */
+        css_undo_stcrw(&crw);
+    }
 }
 
-int ioinst_handle_stsch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
+void ioinst_handle_stsch(S390CPU *cpu, uint64_t reg1, uint32_t ipb)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
     uint64_t addr;
     int cc;
-    SCHIB *schib;
-    hwaddr len = sizeof(*schib);
+    SCHIB schib;
+    CPUS390XState *env = &cpu->env;
+
+    addr = decode_basedisp_s(env, ipb);
+    if (addr & 3) {
+        program_interrupt(env, PGM_SPECIFICATION, 2);
+        return;
+    }
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        /*
+         * As operand exceptions have a lower priority than access exceptions,
+         * we check whether the memory area is writeable (injecting the
+         * access execption if it is not) first.
+         */
+        if (!s390_cpu_virt_mem_check_write(cpu, addr, sizeof(schib))) {
+            program_interrupt(env, PGM_OPERAND, 2);
+        }
+        return;
     }
     trace_ioinst_sch_id("stsch", cssid, ssid, schid);
-    addr = decode_basedisp_s(env, ipb);
-    schib = s390_cpu_physical_memory_map(env, addr, &len, 1);
-    if (!schib || len != sizeof(*schib)) {
-        program_interrupt(env, PGM_SPECIFICATION, 2);
-        cc = -EIO;
-        goto out;
-    }
     sch = css_find_subch(m, cssid, ssid, schid);
     if (sch) {
         if (css_subch_visible(sch)) {
-            css_do_stsch(sch, schib);
+            css_do_stsch(sch, &schib);
             cc = 0;
         } else {
             /* Indicate no more subchannels in this css/ss */
@@ -320,24 +317,31 @@ int ioinst_handle_stsch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
             cc = 3; /* No more subchannels in this css/ss */
         } else {
             /* Store an empty schib. */
-            memset(schib, 0, sizeof(*schib));
+            memset(&schib, 0, sizeof(schib));
             cc = 0;
         }
     }
-out:
-    s390_cpu_physical_memory_unmap(env, schib, len, 1);
-    return cc;
+    if (cc != 3) {
+        if (s390_cpu_virt_mem_write(cpu, addr, &schib, sizeof(schib)) != 0) {
+            return;
+        }
+    } else {
+        /* Access exceptions have a higher priority than cc3 */
+        if (s390_cpu_virt_mem_check_write(cpu, addr, sizeof(schib)) != 0) {
+            return;
+        }
+    }
+    setcc(cpu, cc);
 }
 
-int ioinst_handle_tsch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
+int ioinst_handle_tsch(S390CPU *cpu, uint64_t reg1, uint32_t ipb)
 {
+    CPUS390XState *env = &cpu->env;
     int cssid, ssid, schid, m;
     SubchDev *sch;
-    IRB *irb;
+    IRB irb;
     uint64_t addr;
-    int ret = -ENODEV;
-    int cc;
-    hwaddr len = sizeof(*irb);
+    int cc, irb_len;
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
         program_interrupt(env, PGM_OPERAND, 2);
@@ -345,23 +349,33 @@ int ioinst_handle_tsch(CPUS390XState *env, uint64_t reg1, uint32_t ipb)
     }
     trace_ioinst_sch_id("tsch", cssid, ssid, schid);
     addr = decode_basedisp_s(env, ipb);
-    irb = s390_cpu_physical_memory_map(env, addr, &len, 1);
-    if (!irb || len != sizeof(*irb)) {
+    if (addr & 3) {
         program_interrupt(env, PGM_SPECIFICATION, 2);
-        cc = -EIO;
-        goto out;
+        return -EIO;
     }
+
     sch = css_find_subch(m, cssid, ssid, schid);
     if (sch && css_subch_visible(sch)) {
-        ret = css_do_tsch(sch, irb);
-        /* 0 - status pending, 1 - not status pending */
-        cc = ret;
+        cc = css_do_tsch_get_irb(sch, &irb, &irb_len);
     } else {
         cc = 3;
     }
-out:
-    s390_cpu_physical_memory_unmap(env, irb, sizeof(*irb), 1);
-    return cc;
+    /* 0 - status pending, 1 - not status pending, 3 - not operational */
+    if (cc != 3) {
+        if (s390_cpu_virt_mem_write(cpu, addr, &irb, irb_len) != 0) {
+            return -EFAULT;
+        }
+        css_do_tsch_update_subch(sch);
+    } else {
+        irb_len = sizeof(irb) - sizeof(irb.emw);
+        /* Access exceptions have a higher priority than cc3 */
+        if (s390_cpu_virt_mem_check_write(cpu, addr, irb_len) != 0) {
+            return -EFAULT;
+        }
+    }
+
+    setcc(cpu, cc);
+    return 0;
 }
 
 typedef struct ChscReq {
@@ -384,6 +398,7 @@ typedef struct ChscResp {
 #define CHSC_SCPD 0x0002
 #define CHSC_SCSC 0x0010
 #define CHSC_SDA  0x0031
+#define CHSC_SEI  0x000e
 
 #define CHSC_SCPD_0_M 0x20000000
 #define CHSC_SCPD_0_C 0x10000000
@@ -552,6 +567,53 @@ out:
     res->param = 0;
 }
 
+static int chsc_sei_nt0_get_event(void *res)
+{
+    /* no events yet */
+    return 1;
+}
+
+static int chsc_sei_nt0_have_event(void)
+{
+    /* no events yet */
+    return 0;
+}
+
+#define CHSC_SEI_NT0    (1ULL << 63)
+#define CHSC_SEI_NT2    (1ULL << 61)
+static void ioinst_handle_chsc_sei(ChscReq *req, ChscResp *res)
+{
+    uint64_t selection_mask = ldq_p(&req->param1);
+    uint8_t *res_flags = (uint8_t *)res->data;
+    int have_event = 0;
+    int have_more = 0;
+
+    /* regarding architecture nt0 can not be masked */
+    have_event = !chsc_sei_nt0_get_event(res);
+    have_more = chsc_sei_nt0_have_event();
+
+    if (selection_mask & CHSC_SEI_NT2) {
+        if (!have_event) {
+            have_event = !chsc_sei_nt2_get_event(res);
+        }
+
+        if (!have_more) {
+            have_more = chsc_sei_nt2_have_event();
+        }
+    }
+
+    if (have_event) {
+        res->code = cpu_to_be16(0x0001);
+        if (have_more) {
+            (*res_flags) |= 0x80;
+        } else {
+            (*res_flags) &= ~0x80;
+        }
+    } else {
+        res->code = cpu_to_be16(0x0004);
+    }
+}
+
 static void ioinst_handle_chsc_unimplemented(ChscResp *res)
 {
     res->len = cpu_to_be16(CHSC_MIN_RESP_LEN);
@@ -559,7 +621,7 @@ static void ioinst_handle_chsc_unimplemented(ChscResp *res)
     res->param = 0;
 }
 
-int ioinst_handle_chsc(CPUS390XState *env, uint32_t ipb)
+void ioinst_handle_chsc(S390CPU *cpu, uint32_t ipb)
 {
     ChscReq *req;
     ChscResp *res;
@@ -567,8 +629,8 @@ int ioinst_handle_chsc(CPUS390XState *env, uint32_t ipb)
     int reg;
     uint16_t len;
     uint16_t command;
-    hwaddr map_size = TARGET_PAGE_SIZE;
-    int ret = 0;
+    CPUS390XState *env = &cpu->env;
+    uint8_t buf[TARGET_PAGE_SIZE];
 
     trace_ioinst("chsc");
     reg = (ipb >> 20) & 0x00f;
@@ -576,20 +638,22 @@ int ioinst_handle_chsc(CPUS390XState *env, uint32_t ipb)
     /* Page boundary? */
     if (addr & 0xfff) {
         program_interrupt(env, PGM_SPECIFICATION, 2);
-        return -EIO;
+        return;
     }
-    req = s390_cpu_physical_memory_map(env, addr, &map_size, 1);
-    if (!req || map_size != TARGET_PAGE_SIZE) {
-        program_interrupt(env, PGM_SPECIFICATION, 2);
-        ret = -EIO;
-        goto out;
+    /*
+     * Reading sizeof(ChscReq) bytes is currently enough for all of our
+     * present CHSC sub-handlers ... if we ever need more, we should take
+     * care of req->len here first.
+     */
+    if (s390_cpu_virt_mem_read(cpu, addr, buf, sizeof(ChscReq))) {
+        return;
     }
+    req = (ChscReq *)buf;
     len = be16_to_cpu(req->len);
     /* Length field valid? */
     if ((len < 16) || (len > 4088) || (len & 7)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        ret = -EIO;
-        goto out;
+        return;
     }
     memset((char *)req + len, 0, TARGET_PAGE_SIZE - len);
     res = (void *)((char *)req + len);
@@ -605,38 +669,41 @@ int ioinst_handle_chsc(CPUS390XState *env, uint32_t ipb)
     case CHSC_SDA:
         ioinst_handle_chsc_sda(req, res);
         break;
+    case CHSC_SEI:
+        ioinst_handle_chsc_sei(req, res);
+        break;
     default:
         ioinst_handle_chsc_unimplemented(res);
         break;
     }
 
-out:
-    s390_cpu_physical_memory_unmap(env, req, map_size, 1);
-    return ret;
+    if (!s390_cpu_virt_mem_write(cpu, addr + len, res, be16_to_cpu(res->len))) {
+        setcc(cpu, 0);    /* Command execution complete */
+    }
 }
 
-int ioinst_handle_tpi(CPUS390XState *env, uint32_t ipb)
+int ioinst_handle_tpi(S390CPU *cpu, uint32_t ipb)
 {
+    CPUS390XState *env = &cpu->env;
     uint64_t addr;
     int lowcore;
-    IOIntCode *int_code;
-    hwaddr len, orig_len;
+    IOIntCode int_code;
+    hwaddr len;
     int ret;
 
     trace_ioinst("tpi");
     addr = decode_basedisp_s(env, ipb);
+    if (addr & 3) {
+        program_interrupt(env, PGM_SPECIFICATION, 2);
+        return -EIO;
+    }
+
     lowcore = addr ? 0 : 1;
     len = lowcore ? 8 /* two words */ : 12 /* three words */;
-    orig_len = len;
-    int_code = s390_cpu_physical_memory_map(env, addr, &len, 1);
-    if (!int_code || (len != orig_len)) {
-        program_interrupt(env, PGM_SPECIFICATION, 2);
-        ret = -EIO;
-        goto out;
+    ret = css_do_tpi(&int_code, lowcore);
+    if (ret == 1) {
+        s390_cpu_virt_mem_write(cpu, lowcore ? 184 : addr, &int_code, len);
     }
-    ret = css_do_tpi(int_code, lowcore);
-out:
-    s390_cpu_physical_memory_unmap(env, int_code, len, 1);
     return ret;
 }
 
@@ -645,35 +712,34 @@ out:
 #define SCHM_REG1_UPD(_reg) ((_reg & 0x0000000000000002) >> 1)
 #define SCHM_REG1_DCT(_reg) (_reg & 0x0000000000000001)
 
-int ioinst_handle_schm(CPUS390XState *env, uint64_t reg1, uint64_t reg2,
-                       uint32_t ipb)
+void ioinst_handle_schm(S390CPU *cpu, uint64_t reg1, uint64_t reg2,
+                        uint32_t ipb)
 {
     uint8_t mbk;
     int update;
     int dct;
+    CPUS390XState *env = &cpu->env;
 
     trace_ioinst("schm");
 
     if (SCHM_REG1_RES(reg1)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
 
     mbk = SCHM_REG1_MBK(reg1);
     update = SCHM_REG1_UPD(reg1);
     dct = SCHM_REG1_DCT(reg1);
 
-    if (update && (reg2 & 0x0000000000000fff)) {
+    if (update && (reg2 & 0x000000000000001f)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
 
     css_do_schm(mbk, update, dct, update ? reg2 : 0);
-
-    return 0;
 }
 
-int ioinst_handle_rsch(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_rsch(S390CPU *cpu, uint64_t reg1)
 {
     int cssid, ssid, schid, m;
     SubchDev *sch;
@@ -681,8 +747,8 @@ int ioinst_handle_rsch(CPUS390XState *env, uint64_t reg1)
     int cc;
 
     if (ioinst_disassemble_sch_ident(reg1, &m, &cssid, &ssid, &schid)) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        program_interrupt(&cpu->env, PGM_OPERAND, 2);
+        return;
     }
     trace_ioinst_sch_id("rsch", cssid, ssid, schid);
     sch = css_find_subch(m, cssid, ssid, schid);
@@ -703,24 +769,23 @@ int ioinst_handle_rsch(CPUS390XState *env, uint64_t reg1)
         cc = 1;
         break;
     }
-
-    return cc;
-
+    setcc(cpu, cc);
 }
 
 #define RCHP_REG1_RES(_reg) (_reg & 0x00000000ff00ff00)
 #define RCHP_REG1_CSSID(_reg) ((_reg & 0x0000000000ff0000) >> 16)
 #define RCHP_REG1_CHPID(_reg) (_reg & 0x00000000000000ff)
-int ioinst_handle_rchp(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_rchp(S390CPU *cpu, uint64_t reg1)
 {
     int cc;
     uint8_t cssid;
     uint8_t chpid;
     int ret;
+    CPUS390XState *env = &cpu->env;
 
     if (RCHP_REG1_RES(reg1)) {
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
 
     cssid = RCHP_REG1_CSSID(reg1);
@@ -743,19 +808,16 @@ int ioinst_handle_rchp(CPUS390XState *env, uint64_t reg1)
     default:
         /* Invalid channel subsystem. */
         program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        return;
     }
-
-    return cc;
+    setcc(cpu, cc);
 }
 
 #define SAL_REG1_INVALID(_reg) (_reg & 0x0000000080000000)
-int ioinst_handle_sal(CPUS390XState *env, uint64_t reg1)
+void ioinst_handle_sal(S390CPU *cpu, uint64_t reg1)
 {
     /* We do not provide address limit checking, so let's suppress it. */
     if (SAL_REG1_INVALID(reg1) || reg1 & 0x000000000000ffff) {
-        program_interrupt(env, PGM_OPERAND, 2);
-        return -EIO;
+        program_interrupt(&cpu->env, PGM_OPERAND, 2);
     }
-    return 0;
 }

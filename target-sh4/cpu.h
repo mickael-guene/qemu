@@ -23,7 +23,6 @@
 #include "qemu-common.h"
 
 #define TARGET_LONG_BITS 32
-#define TARGET_HAS_ICE 1
 
 #define ELF_MACHINE	EM_SH
 
@@ -157,9 +156,6 @@ typedef struct CPUSH4State {
     /* float point status register */
     float_status fp_status;
 
-    /* The features that we should emulate. See sh_features above.  */
-    uint32_t features;
-
     /* Those belong to the specific unit (SH7750) but are handled here */
     uint32_t mmucr;		/* MMU control register */
     uint32_t pteh;		/* page table entry high register */
@@ -178,7 +174,11 @@ typedef struct CPUSH4State {
 
     CPU_COMMON
 
+    /* Fields from here on are preserved over CPU reset. */
     int id;			/* CPU model */
+
+    /* The features that we should emulate. See sh_features above.  */
+    uint32_t features;
 
     void *intc_handle;
     int in_sleep;		/* SR_BL ignored during sleep */
@@ -193,9 +193,8 @@ SuperHCPU *cpu_sh4_init(const char *cpu_model);
 int cpu_sh4_exec(CPUSH4State * s);
 int cpu_sh4_signal_handler(int host_signum, void *pinfo,
                            void *puc);
-int cpu_sh4_handle_mmu_fault(CPUSH4State * env, target_ulong address, int rw,
-                             int mmu_idx);
-#define cpu_handle_mmu_fault cpu_sh4_handle_mmu_fault
+int superh_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int rw,
+                                int mmu_idx);
 
 void sh4_cpu_list(FILE *f, fprintf_function cpu_fprintf);
 #if !defined(CONFIG_USER_ONLY)
@@ -220,21 +219,9 @@ void cpu_sh4_write_mmaped_utlb_data(CPUSH4State *s, hwaddr addr,
 
 int cpu_sh4_is_cached(CPUSH4State * env, target_ulong addr);
 
-static inline void cpu_set_tls(CPUSH4State *env, target_ulong newtls)
-{
-  env->gbr = newtls;
-}
-
 void cpu_load_tlb(CPUSH4State * env);
 
-static inline CPUSH4State *cpu_init(const char *cpu_model)
-{
-    SuperHCPU *cpu = cpu_sh4_init(cpu_model);
-    if (cpu == NULL) {
-        return NULL;
-    }
-    return &cpu->env;
-}
+#define cpu_init(cpu_model) CPU(cpu_sh4_init(cpu_model))
 
 #define cpu_exec cpu_sh4_exec
 #define cpu_gen_code cpu_sh4_gen_code
@@ -249,15 +236,6 @@ static inline int cpu_mmu_index (CPUSH4State *env)
 {
     return (env->sr & SR_MD) == 0 ? 1 : 0;
 }
-
-#if defined(CONFIG_USER_ONLY)
-static inline void cpu_clone_regs(CPUSH4State *env, target_ulong newsp)
-{
-    if (newsp)
-        env->gregs[15] = newsp;
-    env->gregs[0] = 0;
-}
-#endif
 
 #include "exec/cpu-all.h"
 
@@ -366,17 +344,6 @@ static inline void cpu_get_tb_cpu_state(CPUSH4State *env, target_ulong *pc,
             | (env->movcal_backup ? TB_FLAG_PENDING_MOVCA : 0); /* Bit 4 */
 }
 
-static inline bool cpu_has_work(CPUState *cpu)
-{
-    return cpu->interrupt_request & CPU_INTERRUPT_HARD;
-}
-
 #include "exec/exec-all.h"
-
-static inline void cpu_pc_from_tb(CPUSH4State *env, TranslationBlock *tb)
-{
-    env->pc = tb->pc;
-    env->flags = tb->flags;
-}
 
 #endif				/* _CPU_SH4_H */

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "libopenbios/openbios.h"
 #include "libopenbios/bindings.h"
+#include "libopenbios/console.h"
 #include "drivers/drivers.h"
 #include "dict.h"
 #include "arch/common/nvram.h"
@@ -26,21 +27,18 @@
 
 #define UUID_FMT "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x"
 
-#define NVRAM_ADDR_LO 0x74
-#define NVRAM_ADDR_HI 0x75
-#define NVRAM_DATA    0x77
-
 #define APB_SPECIAL_BASE     0x1fe00000000ULL
 #define APB_MEM_BASE         0x1ff00000000ULL
 
 #define MEMORY_SIZE     (512*1024)      /* 512K ram for hosted system */
 
 // XXX
+#define NVRAM_BASE       0x2000
 #define NVRAM_SIZE       0x2000
 #define NVRAM_IDPROM     0x1fd8
 #define NVRAM_IDPROM_SIZE 32
 #define NVRAM_OB_START   (0)
-#define NVRAM_OB_SIZE    ((0x1fd0 - NVRAM_OB_START) & ~15)
+#define NVRAM_OB_SIZE    ((NVRAM_IDPROM - NVRAM_OB_START) & ~15)
 
 static uint8_t idprom[NVRAM_IDPROM_SIZE];
 
@@ -59,7 +57,7 @@ static const struct hwdef hwdefs[] = {
             .cfg_data = APB_MEM_BASE,                    // PCI bus memory space
             .cfg_base = APB_SPECIAL_BASE,
             .cfg_len = 0x2000000,
-            .host_mem_base = APB_MEM_BASE,
+            .host_pci_base = APB_MEM_BASE,
             .pci_mem_base = 0x100000, /* avoid VGA at 0xa0000 */
             .mem_len = 0x10000000,
             .io_base = APB_SPECIAL_BASE + 0x2000000ULL, // PCI Bus I/O space
@@ -90,14 +88,18 @@ struct cpudef {
 /*
   ( addr -- ? )
 */
+
+extern volatile uint64_t client_tba;
+
 static void
 set_trap_table(void)
 {
     unsigned long addr;
 
     addr = POP();
-    asm("wrpr %0, %%tba\n"
-        : : "r" (addr));
+
+    /* Update client_tba to be updated on CIF exit */
+    client_tba = addr;
 }
 
 /* Reset control register is defined in 17.2.7.3 of US IIi User Manual */
@@ -106,6 +108,20 @@ sparc64_reset_all(void)
 {
     unsigned long addr = 0x1fe0000f020ULL;
     unsigned long val = 1 << 29;
+
+    asm("stxa %0, [%1] 0x15\n\t"
+        : : "r" (val), "r" (addr) : "memory");
+}
+
+/* PCI Target Address Space Register (see UltraSPARC IIi User's Manual
+  section 19.3.0.4) */
+#define PBM_PCI_TARGET_AS              0x2028
+#define PBM_PCI_TARGET_AS_CD_ENABLE    0x40
+
+static void
+sparc64_set_tas_register(unsigned long val)
+{
+    unsigned long addr = APB_SPECIAL_BASE + PBM_PCI_TARGET_AS;
 
     asm("stxa %0, [%1] 0x15\n\t"
         : : "r" (val), "r" (addr) : "memory");
@@ -333,34 +349,22 @@ id_cpu(void)
     for (;;);
 }
 
-static uint8_t nvram_read_byte(uint16_t offset)
-{
-    outb(offset & 0xff, NVRAM_ADDR_LO);
-    outb(offset >> 8, NVRAM_ADDR_HI);
-    return inb(NVRAM_DATA);
-}
-
 static void nvram_read(uint16_t offset, char *buf, unsigned int nbytes)
 {
     unsigned int i;
 
-    for (i = 0; i < nbytes; i++)
-        buf[i] = nvram_read_byte(offset + i);
-}
-
-static void nvram_write_byte(uint16_t offset, uint8_t val)
-{
-    outb(offset & 0xff, NVRAM_ADDR_LO);
-    outb(offset >> 8, NVRAM_ADDR_HI);
-    outb(val, NVRAM_DATA);
+    for (i = 0; i < nbytes; i++) {
+        buf[i] = inb(NVRAM_BASE + offset + i);
+    }
 }
 
 static void nvram_write(uint16_t offset, const char *buf, unsigned int nbytes)
 {
     unsigned int i;
 
-    for (i = 0; i < nbytes; i++)
-        nvram_write_byte(offset + i, buf[i]);
+    for (i = 0; i < nbytes; i++) {
+        outb(buf[i], NVRAM_BASE + offset + i);
+    }
 }
 
 static uint8_t qemu_uuid[16];
@@ -505,30 +509,12 @@ void arch_nvram_get(char *data)
     }
 
     push_str(stdin_path);
-    fword("open-dev");
-    fword("encode-int");
-    push_str("stdin");
-    fword("property");
-
-    push_str(stdout_path);
-    fword("open-dev");
-    fword("encode-int");
-    push_str("stdout");
-    fword("property");
-
-    push_str(stdin_path);
     push_str("input-device");
     fword("$setenv");
 
     push_str(stdout_path);
     push_str("output-device");
     fword("$setenv");
-
-    push_str(stdin_path);
-    fword("input");
-
-    push_str(stdout_path);
-    fword("output");
 }
 
 void arch_nvram_put(char *data)
@@ -578,6 +564,8 @@ static void init_memory(void)
     PUSH(virt + MEMORY_SIZE);
 }
 
+extern volatile uint64_t *obp_ticks_pointer;
+
 static void
 arch_init( void )
 {
@@ -585,15 +573,25 @@ arch_init( void )
 	modules_init();
 #ifdef CONFIG_DRIVER_PCI
         ob_pci_init();
+
+        /* Set TAS register to match the virtual-dma properties
+           set during sabre configure */
+        sparc64_set_tas_register(PBM_PCI_TARGET_AS_CD_ENABLE);
 #endif
         nvconf_init();
         device_end();
+
+        /* Point to the Forth obp-ticks variable */
+        fword("obp-ticks");
+        obp_ticks_pointer = cell2pointer(POP());
 
 	bind_func("platform-boot", boot );
 	bind_func("(go)", go);
 }
 
 unsigned long isa_io_base;
+
+extern struct _console_ops arch_console_ops;
 
 int openbios(void)
 {
@@ -616,11 +614,10 @@ int openbios(void)
             for(;;); // Internal inconsistency, hang
 
 #ifdef CONFIG_DEBUG_CONSOLE
+        init_console(arch_console_ops);
 #ifdef CONFIG_DEBUG_CONSOLE_SERIAL
 	uart_init(CONFIG_SERIAL_PORT, CONFIG_SERIAL_SPEED);
 #endif
-	/* Clear the screen.  */
-	cls();
         printk("OpenBIOS for Sparc64\n");
 #endif
 

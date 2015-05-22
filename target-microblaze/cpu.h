@@ -34,8 +34,6 @@ typedef struct CPUMBState CPUMBState;
 #include "mmu.h"
 #endif
 
-#define TARGET_HAS_ICE 1
-
 #define ELF_MACHINE	EM_MICROBLAZE
 
 #define EXCP_NMI        1
@@ -47,6 +45,10 @@ typedef struct CPUMBState CPUMBState;
 
 /* MicroBlaze-specific interrupt pending bits.  */
 #define CPU_INTERRUPT_NMI       CPU_INTERRUPT_TGT_EXT_3
+
+/* Meanings of the MBCPU object's two inbound GPIO lines */
+#define MB_CPU_IRQ 0
+#define MB_CPU_FIR 1
 
 /* Register aliases. R0 - R15 */
 #define R_SP     1
@@ -246,6 +248,7 @@ struct CPUMBState {
     /* lwx/swx reserved address */
 #define RES_ADDR_NONE 0xffffffff /* Use 0xffffffff to indicate no reservation */
     uint32_t res_addr;
+    uint32_t res_val;
 
     /* Internal flags.  */
 #define IMM_FLAG	4
@@ -294,14 +297,7 @@ enum {
 #define TARGET_PHYS_ADDR_SPACE_BITS 32
 #define TARGET_VIRT_ADDR_SPACE_BITS 32
 
-static inline CPUMBState *cpu_init(const char *cpu_model)
-{
-    MicroBlazeCPU *cpu = cpu_mb_init(cpu_model);
-    if (cpu == NULL) {
-        return NULL;
-    }
-    return &cpu->env;
-}
+#define cpu_init(cpu_model) CPU(cpu_mb_init(cpu_model))
 
 #define cpu_exec cpu_mb_exec
 #define cpu_gen_code cpu_mb_gen_code
@@ -327,23 +323,8 @@ static inline int cpu_mmu_index (CPUMBState *env)
         return MMU_KERNEL_IDX;
 }
 
-int cpu_mb_handle_mmu_fault(CPUMBState *env, target_ulong address, int rw,
+int mb_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int rw,
                             int mmu_idx);
-#define cpu_handle_mmu_fault cpu_mb_handle_mmu_fault
-
-#if defined(CONFIG_USER_ONLY)
-static inline void cpu_clone_regs(CPUMBState *env, target_ulong newsp)
-{
-    if (newsp)
-        env->regs[R_SP] = newsp;
-    env->regs[3] = 0;
-}
-#endif
-
-static inline void cpu_set_tls(CPUMBState *env, target_ulong newtls)
-{
-    env->regs[21] = newtls;
-}
 
 static inline int cpu_interrupts_enabled(CPUMBState *env)
 {
@@ -367,20 +348,11 @@ static inline void cpu_get_tb_cpu_state(CPUMBState *env, target_ulong *pc,
 }
 
 #if !defined(CONFIG_USER_ONLY)
-void cpu_unassigned_access(CPUMBState *env1, hwaddr addr,
-                           int is_write, int is_exec, int is_asi, int size);
+void mb_cpu_unassigned_access(CPUState *cpu, hwaddr addr,
+                              bool is_write, bool is_exec, int is_asi,
+                              unsigned size);
 #endif
 
-static inline bool cpu_has_work(CPUState *cpu)
-{
-    return cpu->interrupt_request & (CPU_INTERRUPT_HARD | CPU_INTERRUPT_NMI);
-}
-
 #include "exec/exec-all.h"
-
-static inline void cpu_pc_from_tb(CPUMBState *env, TranslationBlock *tb)
-{
-    env->sregs[SR_PC] = tb->pc;
-}
 
 #endif
