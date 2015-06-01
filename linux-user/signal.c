@@ -1543,6 +1543,12 @@ static const unsigned long sigreturn_fdpic_codes[3] = {
     0xe59c9004, /* ldr r9, [r12, #4] to setup got */
     0xe59cf000  /* ldr pc, [r12] to jump into restorer */
 };
+
+static const unsigned long sigreturn_fdpic__thumb_codes[3] = {
+    0xc008f8df, /* ldr r12, [pc, #8] to read function descriptor */
+    0x9004f8dc, /* ldr r9, [r12, #4] to setup got */
+    0xf000f8dc  /* ldr pc, [r12] to jump into restorer */
+};
 #endif
 
 static inline int valid_user_regs(CPUARMState *regs)
@@ -1629,12 +1635,19 @@ setup_return(CPUARMState *env, struct target_sigaction *ka,
              */
             struct fdpic_func_descriptor *funcptr = (struct fdpic_func_descriptor *)ka->sa_restorer;
 
-            __put_user(sigreturn_fdpic_codes[0],   rc);
-            __put_user(sigreturn_fdpic_codes[1],   rc+1);
-            __put_user(sigreturn_fdpic_codes[2],   rc+2);
-            __put_user((unsigned long)funcptr,     rc+3);
+            if (thumb) {
+                __put_user(sigreturn_fdpic__thumb_codes[0],   rc);
+                __put_user(sigreturn_fdpic__thumb_codes[1],   rc+1);
+                __put_user(sigreturn_fdpic__thumb_codes[2],   rc+2);
+                __put_user((unsigned long)funcptr,     rc+3);
+            } else {
+                __put_user(sigreturn_fdpic_codes[0],   rc);
+                __put_user(sigreturn_fdpic_codes[1],   rc+1);
+                __put_user(sigreturn_fdpic_codes[2],   rc+2);
+                __put_user((unsigned long)funcptr,     rc+3);
+            }
 
-            retcode = (unsigned long)rc;
+            retcode = (unsigned long)rc + thumb;
         } else
             retcode = ka->sa_restorer;
 #else
