@@ -337,6 +337,7 @@ vhdx=""
 quorum=""
 numa=""
 fdpic="no"
+default_cpu_model=""
 
 # parse CC options first
 for opt do
@@ -1139,6 +1140,8 @@ for opt do
   ;;
   --disable-fdpic) fdpic="no"
   ;;
+  --with-default-cpu-model=*) default_cpu_model="$optarg"
+  ;;
   *)
       echo "ERROR: unknown option $opt"
       echo "Try '$0 --help' for more information"
@@ -1414,6 +1417,7 @@ Advanced options (experts only):
   --enable-numa            enable libnuma support
   --enable-fdpic           enable load of fdpic binary
   --disable-fdpic          disable load of fdpic binary (default)
+  --with-default-cpu-model allow to specify default CPU model to use
 
 NOTE: The object files are built at the place where configure is launched
 EOF
@@ -5440,6 +5444,9 @@ echo "LDFLAGS+=$ldflags" >> $config_target_mak
 echo "QEMU_CFLAGS+=$cflags" >> $config_target_mak
 if test "$fdpic" = "yes" ; then
     echo "CONFIG_USE_FDPIC=y" >> $config_target_mak
+fi
+if test "$default_cpu_model" != ""; then
+    echo "CONFIG_DEFAULT_CPU_MODEL=\"$default_cpu_model\"" >> $config_target_mak
 fi
 
 done # for target in $targets
